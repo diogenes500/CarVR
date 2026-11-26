@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.1.3</title>
+<title>Car MR Test 0.1.4</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.1.3 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.1.4 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -64,7 +64,7 @@ video{width:100%;border-radius:10px;background:#000}
     </div>
     <div class="card">
       <button class="p" id="hXR">2. Enter mixed reality</button>
-      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>QUIT</b> = point at the red button and pull the trigger (or pinch), or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
+      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
     </div>
     <canvas id="hudPreview" width="1024" height="400"></canvas>
     <div id="log"></div>
@@ -108,7 +108,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -302,8 +302,27 @@ function startHeadset(){
   { const q = qc.getContext('2d'); q.fillStyle = '#d93a3a'; q.beginPath(); q.roundRect(4, 4, 248, 120, 28); q.fill();
     q.fillStyle = '#fff'; q.font = 'bold 56px sans-serif'; q.textAlign = 'center'; q.textBaseline = 'middle'; q.fillText('QUIT', 128, 66); }
   const qTex = new THREE.CanvasTexture(qc); qTex.colorSpace = THREE.SRGBColorSpace;
-  const quitBtn = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: qTex, transparent: true }));
-  quitBtn.position.set(0.42, -0.32, -0.9); quitBtn.rotation.x = -0.3; camera.add(quitBtn);
+  // lower right of the view, within arm's reach so a fingertip can press it
+  const quitBtn = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.045), new THREE.MeshBasicMaterial({ map: qTex, transparent: true }));
+  quitBtn.position.set(0.16, -0.17, -0.45); quitBtn.rotation.set(-0.35, -0.3, 0); camera.add(quitBtn);
+
+  // fingertip press: hold an index fingertip on the button for 0.3 s
+  const hands = [renderer.xr.getHand(0), renderer.xr.getHand(1)]; hands.forEach(h => scene.add(h));
+  const tipP = new THREE.Vector3(); let touchAt = null;
+  function checkFingerQuit(){
+    let touching = false;
+    for (const h of hands) {
+      const tip = h.joints?.['index-finger-tip'];
+      if (!tip || !tip.visible) continue;
+      tip.getWorldPosition(tipP); quitBtn.worldToLocal(tipP);
+      if (Math.abs(tipP.x) < 0.055 && Math.abs(tipP.y) < 0.035 && Math.abs(tipP.z) < 0.035) touching = true;
+    }
+    quitBtn.material.color.set(touching ? 0xffd0d0 : 0xffffff);
+    quitBtn.scale.setScalar(touching ? 0.92 : 1);
+    if (!touching) { touchAt = null; return; }
+    touchAt ??= now();
+    if (now() - touchAt > 300) { touchAt = Infinity; quitApp(); }
+  }
 
   const ray = new THREE.Raycaster(), rayM = new THREE.Matrix4();
   const rayGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -3)]);
@@ -379,7 +398,7 @@ function startHeadset(){
     if (needRecenter && frame) { recenter(); needRecenter = false; }
     const corr = S.corrOn ? S.gain * THREE.MathUtils.degToRad(S.carYaw - S.carYaw0) : 0;
     pivot.rotation.y = baseYaw + corr;
-    if (frame) pollPads(renderer.xr.getSession());
+    if (frame) { pollPads(renderer.xr.getSession()); checkFingerQuit(); }
     if (t - lastHud > 90) { drawHud(); lastHud = t; }
     if (t - lastSend > 100 && S.conn?.open) {
       S.conn.send({ t: 'h', yaw: +S.headYaw.toFixed(2), corr: S.corrOn ? 1 : 0, gain: S.gain, det: S.detSrc, fps: +S.det.fps.toFixed(1), ms: Math.round(S.inferMs), n: S.boxes.length });
