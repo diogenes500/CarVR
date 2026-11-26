@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.1.1</title>
+<title>Car MR Test 0.1.2</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.1.1 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.1.2 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -37,6 +37,9 @@ video{width:100%;border-radius:10px;background:#000}
     <button class="p" id="bHeadset">This is the Quest headset</button>
     <button class="p" id="bPhone">This is the phone</button>
     <p class="v" id="pickHint"></p>
+  </section>
+  <section id="roleBar" class="hide">
+    <button id="bChangeRole">Change role (this device)</button>
   </section>
 
   <!-- HEADSET -->
@@ -75,9 +78,9 @@ video{width:100%;border-radius:10px;background:#000}
       <div id="pConn" class="bad">Not connected</div>
     </div>
     <div class="card">
-      <button class="p" id="pSensors">Enable sensors + GPS</button>
+      <button class="p" id="pSensors">Tap to start sensors</button>
       <button id="pFlip">Flip turn sign</button>
-      <div class="v">Mount the phone firmly. Sign check: rotate the phone flat to the <b>left</b> — "Car yaw" should go <b>up</b>. If it goes down, tap Flip.</div>
+      <div class="v">iOS needs one tap per visit for motion — any tap on the page works. GPS starts by itself once Location is set to Allow. Mount the phone firmly. Sign check: rotate the phone flat to the <b>left</b> — "Car yaw" should go <b>up</b>. If it goes down, tap Flip.</div>
     </div>
     <div class="grid">
       <div class="stat"><b id="sYaw">–</b><span>Car yaw (°)</span></div>
@@ -104,7 +107,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -134,14 +137,25 @@ function rateTracker(){ const ts = []; return { tick(){ const t = now(); ts.push
 
 // ---------- role pick ----------
 if (navigator.xr) navigator.xr.isSessionSupported('immersive-ar').then(ok => { $('pickHint').textContent = ok ? 'This device supports mixed reality — probably the headset.' : 'No mixed reality here — probably the phone.'; }).catch(()=>{});
-$('bHeadset').onclick = () => { $('pick').classList.add('hide'); $('headset').classList.remove('hide'); startHeadset(); };
-$('bPhone').onclick = () => { $('pick').classList.add('hide'); $('phone').classList.remove('hide'); startPhone(); };
+const store = { get(k){ try { return localStorage.getItem('carmr.' + k); } catch { return null; } },
+  set(k, v){ try { localStorage.setItem('carmr.' + k, v); } catch {} }, del(k){ try { localStorage.removeItem('carmr.' + k); } catch {} } };
+function choose(role){
+  store.set('role', role);
+  $('pick').classList.add('hide'); $('roleBar').classList.remove('hide');
+  $(role).classList.remove('hide');
+  role === 'headset' ? startHeadset() : startPhone();
+}
+$('bHeadset').onclick = () => choose('headset');
+$('bPhone').onclick = () => choose('phone');
+$('bChangeRole').onclick = () => { store.del('role'); location.reload(); };
+{ const r = store.get('role'); if (r === 'headset' || r === 'phone') choose(r); }
 
 // =====================================================================
 // HEADSET
 // =====================================================================
 function startHeadset(){
-  const code = String(Math.floor(1000 + Math.random() * 9000));
+  let code = store.get('code');
+  if (!/^\d{4}$/.test(code || '')) { code = String(Math.floor(1000 + Math.random() * 9000)); store.set('code', code); }
   $('hCode').textContent = code;
   const S = { conn: null, phoneId: null, carYaw: 0, carRate: 0, gps: null, rtt: null,
     stream: null, cams: [], camIdx: 0, video: document.createElement('video'),
@@ -149,10 +163,23 @@ function startHeadset(){
     corrOn: true, gain: 1.0, carYaw0: 0, headYaw: 0 };
   S.video.playsInline = true; S.video.muted = true;
 
-  const peer = new Peer(PREFIX + code, { debug: 1 });
-  peer.on('open', () => log('Signal server ready. Code ' + code));
-  peer.on('error', e => log('Peer error: ' + e.type));
-  peer.on('connection', c => {
+  let peer, idTries = 0;
+  function makePeer(){
+    peer = new Peer(PREFIX + code, { debug: 1 });
+    peer.on('open', () => { idTries = 0; log('Signal server ready. Code ' + code); });
+    peer.on('error', e => {
+      log('Peer error: ' + e.type);
+      if (e.type === 'unavailable-id') {           // old tab may still hold the code for a few seconds
+        peer.destroy();
+        if (++idTries < 6) setTimeout(makePeer, 4000);
+        else { code = String(Math.floor(1000 + Math.random() * 9000)); store.set('code', code); $('hCode').textContent = code; idTries = 0; makePeer(); }
+      }
+    });
+    peer.on('disconnected', () => { if (!peer.destroyed) setTimeout(() => peer.reconnect(), 2000); });
+    peer.on('connection', onPhone);
+  }
+  makePeer();
+  function onPhone(c){
     S.conn = c; S.phoneId = c.peer;
     c.on('open', () => { $('hConn').textContent = 'Phone connected'; $('hConn').className = 'ok'; log('Phone connected'); if (S.detSrc === 'phone') startPhoneDet(); });
     c.on('close', () => { $('hConn').textContent = 'Phone disconnected'; $('hConn').className = 'bad'; S.conn = null; });
@@ -162,7 +189,7 @@ function startHeadset(){
       else if (m.t === 'det') { S.boxes = m.boxes; S.boxAt = now(); S.inferMs = m.ms; S.det.tick(); }
       else if (m.t === 'pong') S.rtt = now() - m.ts;
     });
-  });
+  }
   setInterval(() => { if (S.conn?.open) S.conn.send({ t: 'ping', ts: now() }); }, 2000);
 
   // camera
@@ -171,14 +198,22 @@ function startHeadset(){
       const first = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
       first.getTracks().forEach(t => t.stop());
       S.cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
-      await openCam(0);
+      const saved = +(store.get('camIdx') || 0);
+      await openCam(saved < S.cams.length ? saved : 0);
       $('hCamNext').disabled = S.cams.length < 2;
     } catch (e) { $('hCamInfo').textContent = 'Camera failed: ' + e.name + ' — ' + e.message; }
   };
+  // Try to start the camera on load; works silently if permission was already granted.
+  (async () => {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      if (devs.some(d => d.kind === 'videoinput' && d.label)) $('hCam').onclick();   // labels are only visible once allowed
+    } catch {}
+  })();
   $('hCamNext').onclick = () => openCam((S.camIdx + 1) % S.cams.length);
   async function openCam(i){
     S.stream?.getTracks().forEach(t => t.stop());
-    S.camIdx = i;
+    S.camIdx = i; store.set('camIdx', i);
     S.stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: S.cams[i].deviceId }, width: 640, height: 480 } });
     S.video.srcObject = S.stream; await S.video.play();
     const s = S.stream.getVideoTracks()[0].getSettings();
@@ -336,23 +371,32 @@ function startPhone(){
     compass: null, gps: null, head: null, rows: [], detOn: false, call: null, det: rateTracker(), inferMs: 0 };
   const plog = m => log(m, 'plog');
 
+  let wantCode = null, retryT = null;
+  const setConn = (txt, ok) => { $('pConn').textContent = txt; $('pConn').className = ok ? 'ok' : 'bad'; };
+  function retry(){ clearTimeout(retryT); if (wantCode) retryT = setTimeout(() => connectTo(wantCode), 3000); }
   $('pConnect').onclick = () => {
     const code = $('pCode').value.trim();
-    if (!/^\d{4}$/.test(code)) { $('pConn').textContent = 'Enter the 4-digit code'; return; }
-    P.peer?.destroy();
+    if (!/^\d{4}$/.test(code)) { setConn('Enter the 4-digit code'); return; }
+    store.set('code', code); connectTo(code);
+  };
+  { const c = store.get('code'); if (/^\d{4}$/.test(c || '')) { $('pCode').value = c; connectTo(c); } }
+  function connectTo(code){
+    wantCode = code; clearTimeout(retryT);
+    P.peer?.destroy(); P.conn = null;
+    setConn('Connecting to ' + code + '…');
     P.peer = new Peer(undefined, { debug: 1 });
-    P.peer.on('error', e => { $('pConn').textContent = 'Error: ' + e.type; $('pConn').className = 'bad'; });
+    P.peer.on('error', e => { setConn(e.type === 'peer-unavailable' ? 'Headset ' + code + ' not found yet — retrying…' : 'Error: ' + e.type + ' — retrying…'); retry(); });
     P.peer.on('open', () => {
       const c = P.peer.connect(PREFIX + code, { reliable: false });
-      c.on('open', () => { P.conn = c; $('pConn').textContent = 'Connected to headset'; $('pConn').className = 'ok'; });
-      c.on('close', () => { P.conn = null; $('pConn').textContent = 'Disconnected'; $('pConn').className = 'bad'; });
+      c.on('open', () => { P.conn = c; setConn('Connected to headset ' + code, true); });
+      c.on('close', () => { P.conn = null; setConn('Disconnected — reconnecting…'); retry(); });
       c.on('data', onMsg);
     });
     P.peer.on('call', call => {
       P.call?.close(); P.call = call; call.answer();
       call.on('stream', s => { const v = $('pVideo'); v.srcObject = s; v.classList.remove('hide'); v.play().catch(()=>{}); plog('Receiving headset camera'); });
     });
-  };
+  }
 
   function onMsg(m){
     if (m.t === 'ping') P.conn?.send({ t: 'pong', ts: m.ts });
@@ -387,23 +431,27 @@ function startPhone(){
   // sensors
   // Request permissions synchronously inside the tap (iOS needs the user gesture),
   // and never let one failure stop the other sensors.
-  let motionCount = 0;
-  $('pSensors').onclick = () => {
+  let motionCount = 0, motionOn = false, compassOn = false;
+  $('pSensors').onclick = startSensors;
+  document.addEventListener('click', startSensors, { once: true });   // first tap anywhere counts
+  navigator.permissions?.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') startGps(); }).catch(() => {});
+  function startSensors(){
+    if (motionOn) return;
     const ask = E => (typeof E !== 'undefined' && typeof E.requestPermission === 'function') ? E.requestPermission() : Promise.resolve('granted');
     const pm = ask(window.DeviceMotionEvent), po = ask(window.DeviceOrientationEvent);
-    startGps();
+    if (gpsWatch == null) startGps();
     pm.then(st => {
       if (st !== 'granted') { $('sMot').textContent = 'denied'; $('sMot').className = 'bad'; plog('Motion permission: ' + st); return; }
-      window.addEventListener('devicemotion', e => { motionCount++; onMotion(e); });
+      if (!motionOn) window.addEventListener('devicemotion', e => { motionCount++; onMotion(e); });
+      motionOn = true; $('pSensors').textContent = 'Sensors on'; $('pSensors').disabled = true;
       $('sMot').textContent = 'waiting';
     }).catch(e => { $('sMot').textContent = 'error'; $('sMot').className = 'bad'; plog('Motion permission error: ' + e.message); });
     po.then(st => {
-      if (st === 'granted') window.addEventListener('deviceorientation', e => { if (e.webkitCompassHeading != null) P.compass = Math.round(e.webkitCompassHeading); });
+      if (st === 'granted' && !compassOn && (compassOn = true)) window.addEventListener('deviceorientation', e => { if (e.webkitCompassHeading != null) P.compass = Math.round(e.webkitCompassHeading); });
       else plog('Compass permission: ' + st);
     }).catch(e => plog('Compass permission error: ' + e.message));
     navigator.wakeLock?.request('screen').catch(() => {});
-    $('pSensors').textContent = 'Sensors requested (tap again to retry)';
-  };
+  }
   let gpsWatch = null;
   function startGps(){
     if (!navigator.geolocation) { $('sGps').textContent = 'not available'; return; }
