@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.1.5</title>
+<title>Car MR Test 0.1.6</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.1.5 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.1.6 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -108,7 +108,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.1.5';
+const VERSION = '0.1.6';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -129,7 +129,7 @@ function getModel(){
 }
 async function detectOnce(model, video){
   const t0 = now();
-  const preds = await model.detect(video, 12, 0.4);
+  const preds = await model.detect(video, 12, 0.3);
   const ms = now() - t0, W = video.videoWidth, H = video.videoHeight;
   const boxes = preds.filter(p => VEH.has(p.class)).map(p => ({ c: p.class, s: +p.score.toFixed(2), x: p.bbox[0]/W, y: p.bbox[1]/H, w: p.bbox[2]/W, h: p.bbox[3]/H }));
   return { boxes, ms };
@@ -162,7 +162,8 @@ function startHeadset(){
   const S = { conn: null, phoneId: null, carYaw: 0, carRate: 0, gps: null, rtt: null,
     stream: null, cams: [], camIdx: 0, video: document.createElement('video'),
     detSrc: 'off', boxes: [], boxAt: 0, inferMs: 0, det: rateTracker(), call: null,
-    corrOn: true, gain: 1.0, carYaw0: 0, headYaw: 0 };
+    corrOn: true, gain: 1.0, carYaw0: 0, headYaw: 0,
+    model: 'not loaded', camFps: rateTracker(), detErr: '', loopId: 0 };
   S.video.playsInline = true; S.video.muted = true;
 
   let peer, idTries = 0;
@@ -218,6 +219,12 @@ function startHeadset(){
     S.camIdx = i; store.set('camIdx', i);
     S.stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: S.cams[i].deviceId }, width: 640, height: 480 } });
     S.video.srcObject = S.stream; await S.video.play();
+    if (S.video.requestVideoFrameCallback && !S.frameCb) {
+      S.frameCb = true;
+      const onF = () => { S.camFps.tick(); S.video.requestVideoFrameCallback(onF); };
+      S.video.requestVideoFrameCallback(onF);
+    }
+    { const m = store.get('det'); if (m && m !== 'off' && S.detSrc === 'off') setDet(m); }
     const s = S.stream.getVideoTracks()[0].getSettings();
     $('hCamInfo').textContent = `Camera ${i+1}/${S.cams.length}: ${S.cams[i].label || 'unnamed'} · ${s.width}×${s.height}@${s.frameRate ?? '?'}`;
     if (S.detSrc === 'phone') startPhoneDet();
@@ -227,7 +234,7 @@ function startHeadset(){
   const modeBtns = { off: $('hDetOff'), quest: $('hDetQuest'), phone: $('hDetPhone') };
   for (const [k, b] of Object.entries(modeBtns)) b.onclick = () => setDet(k);
   function setDet(k){
-    S.detSrc = k; S.boxes = [];
+    S.detSrc = k; S.boxes = []; S.detErr = ''; store.set('det', k);
     for (const [m, b] of Object.entries(modeBtns)) b.className = m === k ? 'p' : '';
     if (k !== 'phone' && S.call) { S.call.close(); S.call = null; S.conn?.open && S.conn.send({ t: 'detStop' }); }
     if (k === 'quest') questDetLoop();
@@ -235,14 +242,20 @@ function startHeadset(){
     $('hDetInfo').textContent = { off: 'Detection off.', quest: 'Running on Quest…', phone: 'Streaming camera to phone…' }[k];
   }
   async function questDetLoop(){
+    const id = ++S.loopId;                     // only one loop at a time
     let model;
-    try { $('hDetInfo').textContent = 'Loading model on Quest…'; model = await getModel(); $('hDetInfo').textContent = 'Running on Quest (' + tf.getBackend() + ')'; }
-    catch (e) { $('hDetInfo').textContent = 'Model failed: ' + e.message; return; }
-    while (S.detSrc === 'quest') {
+    try { S.model = 'loading…'; $('hDetInfo').textContent = 'Loading model on Quest…'; model = await getModel(); S.model = 'ready (' + tf.getBackend() + ')'; $('hDetInfo').textContent = 'Running on Quest (' + tf.getBackend() + ')'; }
+    catch (e) { S.model = 'FAILED'; S.detErr = e.message; $('hDetInfo').textContent = 'Model failed: ' + e.message; log('Model failed: ' + e.message); return; }
+    while (S.detSrc === 'quest' && id === S.loopId) {
       if (S.video.readyState >= 2) {
-        const r = await detectOnce(model, S.video);
-        if (S.detSrc !== 'quest') break;
-        S.boxes = r.boxes; S.boxAt = now(); S.inferMs = r.ms; S.det.tick();
+        try {
+          const r = await detectOnce(model, S.video);
+          if (S.detSrc !== 'quest') break;
+          S.boxes = r.boxes; S.boxAt = now(); S.inferMs = r.ms; S.det.tick(); S.detErr = '';
+        } catch (e) {
+          if (S.detErr !== e.message) log('Detect error: ' + e.message);
+          S.detErr = e.message; await new Promise(r => setTimeout(r, 500));
+        }
       } else await new Promise(r => setTimeout(r, 100));
       await new Promise(r => setTimeout(r, 0));
     }
@@ -274,15 +287,17 @@ function startHeadset(){
     const lines = [
       `Car MR Test ${VERSION}`,
       `Phone: ${S.conn?.open ? 'connected' : 'NOT connected'}  RTT ${S.rtt ? S.rtt.toFixed(0) + ' ms' : '–'}`,
+      `Camera: ${S.stream ? (S.camFps.fps > 0.5 ? 'LIVE ' + S.camFps.fps.toFixed(0) + ' fps' : 'FROZEN') : 'OFF'}  Model: ${S.model}`,
       `Detect: ${S.detSrc.toUpperCase()}  ${S.det.fps.toFixed(1)} /s  infer ${S.inferMs.toFixed(0)} ms`,
+      S.detErr ? `ERROR: ${S.detErr.slice(0, 40)}` : `Grip (right) = change detect mode`,
       `Boxes: ${S.boxes.length}  age ${S.boxAt ? Math.round(age) + ' ms' : '–'}`,
       `Correction: ${S.corrOn ? 'ON' : 'OFF'}  strength ${S.gain.toFixed(2)}`,
       `Car yaw ${(S.carYaw - S.carYaw0).toFixed(1)}°  rate ${S.carRate.toFixed(1)}°/s`,
       `Head yaw ${S.headYaw.toFixed(1)}°`,
       `GPS ${g ? (g.spd != null ? (g.spd * 2.237).toFixed(0) + ' mph' : '– mph') + '  ±' + f(g.acc && Math.round(g.acc)) + ' m' : '–'}`,
     ];
-    hx.fillStyle = '#e9eef2'; hx.font = '24px sans-serif';
-    lines.forEach((l, i) => hx.fillText(l, 530, 40 + i * 44));
+    hx.font = '22px sans-serif';
+    lines.forEach((l, i) => { hx.fillStyle = /FROZEN|FAILED|ERROR|NOT connected|: OFF/.test(l) ? '#ff6b6b' : '#e9eef2'; hx.fillText(l, 530, 34 + i * 36); });
     hudTex.needsUpdate = true;
   }
 
