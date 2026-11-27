@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.1.10</title>
+<title>Car MR Test 0.1.11</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.1.10 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.1.11 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -109,7 +109,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.1.10';
+const VERSION = '0.1.11';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -199,43 +199,75 @@ function startHeadset(){
   setInterval(() => { if (S.conn?.open) S.conn.send({ t: 'ping', ts: now() }); }, 2000);
 
   // camera
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const camScore = d => { const l = (d.label || '').toLowerCase();
+    if (/avatar|virtual|persona|front|user/.test(l)) return -10;          // avatar camera used for video calls
+    return (/passthrough|headset|environment|back|rear|world/.test(l) ? 5 : 0) + (/left/.test(l) ? 1 : 0); };
+  function showCamList(){
+    const txt = 'Cameras found: ' + (S.cams.length ? S.cams.map((d, i) => `${i+1}. ${d.label || 'unnamed'}${camScore(d) < 0 ? ' (avatar — skipped)' : ''}`).join(' · ') : 'none');
+    if (S.cams.length && S.cams.every(d => camScore(d) < 0)) {
+      S.camWarn = 'AVATAR ONLY: turn on Headset cameras';
+      $('hCamList').innerHTML = '<b class="bad">Only the avatar camera is available.</b> The browser does not have the <b>Headset cameras</b> permission. ' +
+        'Fix: tap the lock icon left of the address bar and set <b>Headset cameras</b> to Allow, or go to <b>Settings → Privacy &amp; safety → Browser</b> (or App permissions) and turn <b>Headset cameras</b> on. Then tap Restart app.<br>';
+      $('hCamList').append(txt);
+    } else { S.camWarn = ''; $('hCamList').textContent = txt; }
+    $('hCamNext').disabled = S.cams.length < 2;
+  }
+  async function listCams(){ S.cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput'); showCamList(); }
+
+  S.camBusy = false;
   $('hCam').onclick = async () => {
+    if (S.camBusy) return;                     // never open the camera twice at once
+    S.camBusy = true;
     try {
-      const first = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640, height: 480, frameRate: { ideal: 60 } } });
-      first.getTracks().forEach(t => t.stop());
-      S.cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
-      // Prefer the real passthrough cameras; avoid the virtual avatar camera used for video calls.
-      const score = d => { const l = (d.label || '').toLowerCase();
-        if (/avatar|virtual|persona|front|user/.test(l)) return -10;
-        return (/passthrough|headset|environment|back|rear|world/.test(l) ? 5 : 0) + (/left/.test(l) ? 1 : 0); };
+      await listCams();
+      if (!S.cams.some(d => d.label)) {        // no permission yet: ask once with a plain request, then release it
+        $('hCamInfo').textContent = 'Asking for camera permission…';
+        const probe = await navigator.mediaDevices.getUserMedia({ video: true });
+        probe.getTracks().forEach(t => t.stop());
+        await sleep(600);                      // give the headset time to release the camera
+        await listCams();
+      }
+      if (!S.cams.length) throw new Error('no cameras listed');
       const savedId = store.get('camId');
       let pick = S.cams.findIndex(d => d.deviceId === savedId);
-      if (pick < 0) pick = S.cams.reduce((b, d, i) => score(d) > score(S.cams[b]) ? i : b, 0);
-      $('hCamList').textContent = 'Cameras found: ' + S.cams.map((d, i) => `${i+1}. ${d.label || 'unnamed'}${score(d) < 0 ? ' (avatar — skipped)' : ''}`).join(' · ');
-      if (S.cams.every(d => score(d) < 0)) {
-        S.camWarn = 'AVATAR ONLY: turn on Headset cameras';
-        $('hCamList').innerHTML = '<b class="bad">Only the avatar camera is available.</b> The browser does not have the <b>Headset cameras</b> permission. ' +
-          'Fix: tap the lock icon left of the address bar and set <b>Headset cameras</b> to Allow, or go to <b>Settings → Privacy &amp; safety → Browser</b> (or App permissions) and turn <b>Headset cameras</b> on. Then tap Restart app.<br>' + $('hCamList').textContent;
-      } else S.camWarn = '';
+      if (pick < 0) pick = S.cams.reduce((b, d, i) => camScore(d) > camScore(S.cams[b]) ? i : b, 0);
       await openCam(pick);
-      $('hCamNext').disabled = S.cams.length < 2;
-    } catch (e) { $('hCamInfo').textContent = 'Camera failed: ' + e.name + ' — ' + e.message; }
+    } catch (e) { $('hCamInfo').textContent = 'Camera failed: ' + e.name + ' — ' + e.message; log('Camera failed: ' + e.name + ' ' + e.message); }
+    S.camBusy = false;
   };
   // Try to start the camera on load; works silently if permission was already granted.
   (async () => {
-    try {
-      const devs = await navigator.mediaDevices.enumerateDevices();
-      if (devs.some(d => d.kind === 'videoinput' && d.label)) $('hCam').onclick();   // labels are only visible once allowed
-    } catch {}
+    try { await listCams(); if (S.cams.some(d => d.label)) $('hCam').onclick(); } catch {}
   })();
-  $('hCamNext').onclick = async () => { await openCam((S.camIdx + 1) % S.cams.length); store.set('camId', S.cams[S.camIdx].deviceId); };
+  $('hCamNext').onclick = async () => {
+    if (S.camBusy || !S.cams.length) return;
+    S.camBusy = true;
+    try { await openCam((S.camIdx + 1) % S.cams.length); store.set('camId', S.cams[S.camIdx].deviceId); }
+    catch (e) { $('hCamInfo').textContent = 'Camera failed: ' + e.name + ' — ' + e.message; }
+    S.camBusy = false;
+  };
   async function openCam(i){
-    S.stream?.getTracks().forEach(t => t.stop());
+    if (S.stream) { S.stream.getTracks().forEach(t => t.stop()); S.stream = null; await sleep(400); }
     S.camIdx = i;
-    S.stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: S.cams[i].deviceId }, width: 640, height: 480, frameRate: { ideal: 60 } } });
+    const id = { exact: S.cams[i].deviceId };
+    // Try 60 fps first, then fall back step by step if the camera refuses that mode.
+    const tries = [
+      { label: '640×480 @60', v: { deviceId: id, width: 640, height: 480, frameRate: { ideal: 60 } } },
+      { label: '640×480', v: { deviceId: id, width: 640, height: 480 } },
+      { label: 'default', v: { deviceId: id } },
+    ];
+    let last;
+    for (const t of tries) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { S.stream = await navigator.mediaDevices.getUserMedia({ video: t.v }); S.camMode = t.label; break; }
+        catch (e) { last = e; log(`Camera ${t.label} failed: ${e.name}`); if (e.name !== 'NotReadableError') break; await sleep(800); }
+      }
+      if (S.stream) break;
+    }
+    if (!S.stream) throw last;
     const trk = S.stream.getVideoTracks()[0];
     S.camMax = trk.getCapabilities?.().frameRate?.max ?? null;
-    try { await trk.applyConstraints({ frameRate: { ideal: Math.min(60, S.camMax || 60) } }); } catch (e) { log('60 fps not accepted: ' + e.message); }
     S.video.srcObject = S.stream; await S.video.play();
     if (S.video.requestVideoFrameCallback && !S.frameCb) {
       S.frameCb = true;
@@ -243,8 +275,8 @@ function startHeadset(){
       S.video.requestVideoFrameCallback(onF);
     }
     { const m = store.get('det'); if (m && m !== 'off' && S.detSrc === 'off') setDet(m); }
-    const s = S.stream.getVideoTracks()[0].getSettings();
-    $('hCamInfo').textContent = `Camera ${i+1}/${S.cams.length}: ${S.cams[i].label || 'unnamed'} · ${s.width}×${s.height} · set ${s.frameRate ? Math.round(s.frameRate) : '?'} fps · max ${S.camMax ? Math.round(S.camMax) : '?'} fps (asked for 60)`;
+    const st = trk.getSettings();
+    $('hCamInfo').textContent = `Camera ${i+1}/${S.cams.length}: ${S.cams[i].label || 'unnamed'} · ${st.width}×${st.height} · set ${st.frameRate ? Math.round(st.frameRate) : '?'} fps · max ${S.camMax ? Math.round(S.camMax) : '?'} fps · mode: ${S.camMode}`;
     if (S.detSrc === 'phone') startPhoneDet();
   }
 
