@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.1.6</title>
+<title>Car MR Test 0.1.7</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.1.6 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.1.7 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -54,6 +54,7 @@ video{width:100%;border-radius:10px;background:#000}
       <button id="hCam">1. Start camera</button>
       <button id="hCamNext" disabled>Next camera</button>
       <div class="v" id="hCamInfo">Camera off. Allow "headset cameras" when asked.</div>
+      <div class="v" id="hCamList"></div>
     </div>
     <div class="card">
       Detection:
@@ -108,7 +109,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.1.6';
+const VERSION = '0.1.7';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -198,11 +199,18 @@ function startHeadset(){
   // camera
   $('hCam').onclick = async () => {
     try {
-      const first = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+      const first = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640, height: 480 } });
       first.getTracks().forEach(t => t.stop());
       S.cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
-      const saved = +(store.get('camIdx') || 0);
-      await openCam(saved < S.cams.length ? saved : 0);
+      // Prefer the real passthrough cameras; avoid the virtual avatar camera used for video calls.
+      const score = d => { const l = (d.label || '').toLowerCase();
+        if (/avatar|virtual|persona|front|user/.test(l)) return -10;
+        return (/passthrough|headset|environment|back|rear|world/.test(l) ? 5 : 0) + (/left/.test(l) ? 1 : 0); };
+      const savedId = store.get('camId');
+      let pick = S.cams.findIndex(d => d.deviceId === savedId);
+      if (pick < 0) pick = S.cams.reduce((b, d, i) => score(d) > score(S.cams[b]) ? i : b, 0);
+      $('hCamList').textContent = 'Cameras found: ' + S.cams.map((d, i) => `${i+1}. ${d.label || 'unnamed'}${score(d) < 0 ? ' (avatar — skipped)' : ''}`).join(' · ');
+      await openCam(pick);
       $('hCamNext').disabled = S.cams.length < 2;
     } catch (e) { $('hCamInfo').textContent = 'Camera failed: ' + e.name + ' — ' + e.message; }
   };
@@ -213,10 +221,10 @@ function startHeadset(){
       if (devs.some(d => d.kind === 'videoinput' && d.label)) $('hCam').onclick();   // labels are only visible once allowed
     } catch {}
   })();
-  $('hCamNext').onclick = () => openCam((S.camIdx + 1) % S.cams.length);
+  $('hCamNext').onclick = async () => { await openCam((S.camIdx + 1) % S.cams.length); store.set('camId', S.cams[S.camIdx].deviceId); };
   async function openCam(i){
     S.stream?.getTracks().forEach(t => t.stop());
-    S.camIdx = i; store.set('camIdx', i);
+    S.camIdx = i;
     S.stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: S.cams[i].deviceId }, width: 640, height: 480 } });
     S.video.srcObject = S.stream; await S.video.play();
     if (S.video.requestVideoFrameCallback && !S.frameCb) {
