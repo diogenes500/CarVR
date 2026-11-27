@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.1.7</title>
+<title>Car MR Test 0.1.8</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.1.7 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.1.8 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -109,7 +109,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.1.7';
+const VERSION = '0.1.8';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -210,6 +210,11 @@ function startHeadset(){
       let pick = S.cams.findIndex(d => d.deviceId === savedId);
       if (pick < 0) pick = S.cams.reduce((b, d, i) => score(d) > score(S.cams[b]) ? i : b, 0);
       $('hCamList').textContent = 'Cameras found: ' + S.cams.map((d, i) => `${i+1}. ${d.label || 'unnamed'}${score(d) < 0 ? ' (avatar — skipped)' : ''}`).join(' · ');
+      if (S.cams.every(d => score(d) < 0)) {
+        S.camWarn = 'AVATAR ONLY: turn on Headset cameras';
+        $('hCamList').innerHTML = '<b class="bad">Only the avatar camera is available.</b> The browser does not have the <b>Headset cameras</b> permission. ' +
+          'Fix: tap the lock icon left of the address bar and set <b>Headset cameras</b> to Allow, or go to <b>Settings → Privacy &amp; safety → Browser</b> (or App permissions) and turn <b>Headset cameras</b> on. Then tap Restart app.<br>' + $('hCamList').textContent;
+      } else S.camWarn = '';
       await openCam(pick);
       $('hCamNext').disabled = S.cams.length < 2;
     } catch (e) { $('hCamInfo').textContent = 'Camera failed: ' + e.name + ' — ' + e.message; }
@@ -295,7 +300,7 @@ function startHeadset(){
     const lines = [
       `Car MR Test ${VERSION}`,
       `Phone: ${S.conn?.open ? 'connected' : 'NOT connected'}  RTT ${S.rtt ? S.rtt.toFixed(0) + ' ms' : '–'}`,
-      `Camera: ${S.stream ? (S.camFps.fps > 0.5 ? 'LIVE ' + S.camFps.fps.toFixed(0) + ' fps' : 'FROZEN') : 'OFF'}  Model: ${S.model}`,
+      S.camWarn ? S.camWarn : `Camera: ${S.stream ? (S.camFps.fps > 0.5 ? 'LIVE ' + S.camFps.fps.toFixed(0) + ' fps' : 'FROZEN') : 'OFF'}  Model: ${S.model}`,
       `Detect: ${S.detSrc.toUpperCase()}  ${S.det.fps.toFixed(1)} /s  infer ${S.inferMs.toFixed(0)} ms`,
       S.detErr ? `ERROR: ${S.detErr.slice(0, 40)}` : `Grip (right) = change detect mode`,
       `Boxes: ${S.boxes.length}  age ${S.boxAt ? Math.round(age) + ' ms' : '–'}`,
@@ -305,7 +310,7 @@ function startHeadset(){
       `GPS ${g ? (g.spd != null ? (g.spd * 2.237).toFixed(0) + ' mph' : '– mph') + '  ±' + f(g.acc && Math.round(g.acc)) + ' m' : '–'}`,
     ];
     hx.font = '22px sans-serif';
-    lines.forEach((l, i) => { hx.fillStyle = /FROZEN|FAILED|ERROR|NOT connected|: OFF/.test(l) ? '#ff6b6b' : '#e9eef2'; hx.fillText(l, 530, 34 + i * 36); });
+    lines.forEach((l, i) => { hx.fillStyle = /FROZEN|FAILED|ERROR|AVATAR|NOT connected|: OFF/.test(l) ? '#ff6b6b' : '#e9eef2'; hx.fillText(l, 530, 34 + i * 36); });
     hudTex.needsUpdate = true;
   }
 
