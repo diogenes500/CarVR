@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.1.8</title>
+<title>Car MR Test 0.1.9</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.1.8 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.1.9 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -109,7 +109,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.1.8';
+const VERSION = '0.1.9';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -184,9 +184,11 @@ function startHeadset(){
   }
   makePeer();
   function onPhone(c){
+    const old = S.conn;
     S.conn = c; S.phoneId = c.peer;
-    c.on('open', () => { $('hConn').textContent = 'Phone connected'; $('hConn').className = 'ok'; log('Phone connected'); if (S.detSrc === 'phone') startPhoneDet(); });
-    c.on('close', () => { $('hConn').textContent = 'Phone disconnected'; $('hConn').className = 'bad'; S.conn = null; });
+    if (old && old !== c) try { old.close(); } catch {}
+    c.on('open', () => { if (S.conn !== c) return; $('hConn').textContent = 'Phone connected'; $('hConn').className = 'ok'; log('Phone connected'); if (S.detSrc === 'phone') startPhoneDet(); });
+    c.on('close', () => { if (S.conn !== c) return; $('hConn').textContent = 'Phone disconnected'; $('hConn').className = 'bad'; S.conn = null; log('Phone link closed'); });
     c.on('data', m => {
       if (m.t === 'imu') { S.carYaw = m.yaw; S.carRate = m.rate; }
       else if (m.t === 'gps') S.gps = m;
@@ -457,6 +459,9 @@ function startPhone(){
   const plog = m => log(m, 'plog');
 
   let wantCode = null, retryT = null;
+  setInterval(() => {
+    if (P.conn?.open && now() - (P.lastRx || 0) > 6000) { plog('No data for 6 s — reconnecting'); P.drops = (P.drops || 0) + 1; const dead = P.conn; P.conn = null; try { dead.close(); } catch {} if (wantCode) connectTo(wantCode); }
+  }, 2000);
   const setConn = (txt, ok) => { $('pConn').textContent = txt; $('pConn').className = ok ? 'ok' : 'bad'; };
   function retry(){ clearTimeout(retryT); if (wantCode) retryT = setTimeout(() => connectTo(wantCode), 3000); }
   $('pConnect').onclick = () => {
@@ -470,12 +475,19 @@ function startPhone(){
     P.peer?.destroy(); P.conn = null;
     setConn('Connecting to ' + code + '…');
     P.peer = new Peer(undefined, { debug: 1 });
-    P.peer.on('error', e => { setConn(e.type === 'peer-unavailable' ? 'Headset ' + code + ' not found yet — retrying…' : 'Error: ' + e.type + ' — retrying…'); retry(); });
-    P.peer.on('open', () => {
+    const me = P.peer;
+    me.on('error', e => {
+      plog('Peer error: ' + e.type);
+      if (P.conn?.open) return;                               // link still up: ignore relay-server hiccups
+      setConn(e.type === 'peer-unavailable' ? 'Headset ' + code + ' not found yet — retrying…' : 'Error: ' + e.type + ' — retrying…'); retry();
+    });
+    me.on('disconnected', () => { plog('Relay server lost (link may still be fine)'); setTimeout(() => { if (!me.destroyed && me.disconnected) try { me.reconnect(); } catch {} }, 1500); });
+    me.on('open', () => {
+      if (P.conn?.open) return;
       const c = P.peer.connect(PREFIX + code, { reliable: false });
-      c.on('open', () => { P.conn = c; setConn('Connected to headset ' + code, true); });
-      c.on('close', () => { P.conn = null; setConn('Disconnected — reconnecting…'); retry(); });
-      c.on('data', onMsg);
+      c.on('open', () => { P.conn = c; P.lastRx = now(); setConn('Connected to headset ' + code + (P.drops ? ` (reconnects: ${P.drops})` : ''), true); });
+      c.on('close', () => { if (P.conn !== c) return; P.conn = null; P.drops = (P.drops || 0) + 1; plog('Link closed'); setConn('Disconnected — reconnecting…'); retry(); });
+      c.on('data', m => { P.lastRx = now(); onMsg(m); });
     });
     P.peer.on('call', call => {
       P.call?.close(); P.call = call; call.answer();
