@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.2.0</title>
+<title>Car MR Test 0.3.0</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.2.0 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.3.0 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -65,7 +65,7 @@ video{width:100%;border-radius:10px;background:#000}
     </div>
     <div class="card">
       <button class="p" id="hXR">2. Enter mixed reality</button>
-      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
+      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>left stick ←/→</b> = camera field of view (adjust until markers sit on the real objects) · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
     </div>
     <canvas id="hudPreview" width="1024" height="400"></canvas>
     <div id="log"></div>
@@ -109,7 +109,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -130,12 +130,77 @@ function getModel(){
 }
 async function detectOnce(model, video){
   const t0 = now();
-  const preds = await model.detect(video, 12, 0.3);
+  const preds = await model.detect(video, 20, 0.2);
   const ms = now() - t0, W = video.videoWidth, H = video.videoHeight;
   const boxes = preds.filter(p => VEH.has(p.class)).map(p => ({ c: p.class, s: +p.score.toFixed(2), x: p.bbox[0]/W, y: p.bbox[1]/H, w: p.bbox[2]/W, h: p.bbox[3]/H }));
   return { boxes, ms };
 }
 function rateTracker(){ const ts = []; return { tick(){ const t = now(); ts.push(t); while (ts.length && t - ts[0] > 2000) ts.shift(); }, get fps(){ return ts.length < 2 ? 0 : (ts.length - 1) / ((ts[ts.length-1] - ts[0]) / 1000); } }; }
+
+// ---------- multi-object tracker (ByteTrack-style, angular world coordinates) ----------
+// Each detection is turned into a world direction (azimuth/elevation, radians) using the head pose at
+// capture time, so turning your head does not move the objects. Tracks keep a constant-velocity
+// prediction (alpha-beta filter), so they can be drawn every display frame between detections.
+const GROUP = { car: 'veh', truck: 'veh', bus: 'veh', motorcycle: 'bike', bicycle: 'bike', person: 'person' };
+const REAL = { car: [1.8, 1.5], truck: [2.5, 3.0], bus: [2.6, 3.2], motorcycle: [0.8, 1.4], bicycle: [0.6, 1.1], person: [0.5, 1.7] }; // width, height in m
+const HI = 0.45, MAX_MISS_MS = 700, CONFIRM_HITS = 3;
+const wrapA = a => Math.atan2(Math.sin(a), Math.cos(a));
+function makeTracker(){
+  const T = { list: [], nextId: 1 };
+  T.pred = (tr, t) => { const dt = Math.max(0, (t - tr.t) / 1000); return { az: wrapA(tr.az + tr.vaz * dt), el: tr.el + tr.vel * dt, w: tr.w, h: tr.h }; };
+  function score(p, d){
+    const dx = Math.abs(wrapA(p.az - d.az)), dy = Math.abs(p.el - d.el);
+    const ix = Math.max(0, (p.w + d.w) / 2 - dx), iy = Math.max(0, (p.h + d.h) / 2 - dy), inter = ix * iy;
+    const iou = inter / (p.w * p.h + d.w * d.h - inter + 1e-9);
+    if (iou > 0) return iou;
+    const gate = Math.max(p.w, p.h, d.w, d.h), dist = Math.hypot(dx, dy);   // no overlap: allow a near miss
+    return dist < gate ? 0.05 * (1 - dist / gate) : 0;
+  }
+  function match(tracks, dets, t){
+    const pairs = [];
+    tracks.forEach((tr, i) => { const p = T.pred(tr, t); dets.forEach((d, j) => {
+      if (GROUP[tr.cls] !== GROUP[d.c]) return; const v = score(p, d); if (v > 0.01) pairs.push([v, i, j]); }); });
+    pairs.sort((a, b) => b[0] - a[0]);
+    const uT = new Set(tracks.map((_, i) => i)), uD = new Set(dets.map((_, j) => j)), m = [];
+    for (const [, i, j] of pairs) if (uT.has(i) && uD.has(j)) { uT.delete(i); uD.delete(j); m.push([tracks[i], dets[j]]); }
+    return { m, unT: [...uT].map(i => tracks[i]), unD: [...uD].map(j => dets[j]) };
+  }
+  function apply(tr, d, t){
+    const dt = Math.min(Math.max((t - tr.t) / 1000, 0.01), 0.5), p = T.pred(tr, t);
+    const raz = wrapA(d.az - p.az), rel = d.el - p.el, A = 0.55, B = 0.25, VMAX = 1.5;
+    tr.az = wrapA(p.az + A * raz); tr.el = p.el + A * rel;
+    tr.vaz = Math.max(-VMAX, Math.min(VMAX, tr.vaz + B * raz / dt));
+    tr.vel = Math.max(-VMAX, Math.min(VMAX, tr.vel + B * rel / dt));
+    tr.w += 0.4 * (d.w - tr.w); tr.h += 0.4 * (d.h - tr.h);
+    tr.t = t; tr.seen = t; tr.hits++; tr.cls = d.c; tr.s = d.s; tr.img = d.img;
+    if (tr.hits >= CONFIRM_HITS) tr.ok = true;
+    tr.trail.push([tr.az, tr.el]); if (tr.trail.length > 30) tr.trail.shift();
+  }
+  T.update = (dets, t) => {
+    const hi = dets.filter(d => d.s >= HI), lo = dets.filter(d => d.s < HI);
+    const a = match(T.list, hi, t); a.m.forEach(([tr, d]) => apply(tr, d, t));
+    const b = match(a.unT, lo, t);  b.m.forEach(([tr, d]) => apply(tr, d, t));   // second pass: low-confidence boxes keep tracks alive
+    const lost = new Set(b.unT.filter(tr => !tr.ok));                            // tentative tracks die on their first miss
+    T.list = T.list.filter(tr => !lost.has(tr));
+    for (const d of a.unD) T.list.push({ id: T.nextId++, az: d.az, el: d.el, vaz: 0, vel: 0, w: d.w, h: d.h, t, seen: t, hits: 1, ok: false, cls: d.c, s: d.s, img: d.img, trail: [[d.az, d.el]] });
+  };
+  T.prune = t => { T.list = T.list.filter(tr => t - tr.seen < MAX_MISS_MS); };
+  T.distance = (tr, p) => {                      // rough range from the object's known real size
+    const [rw, rh] = REAL[tr.cls] || [1.8, 1.5];
+    const dw = rw / (2 * Math.tan(Math.max(p.w, 0.002) / 2)), dh = rh / (2 * Math.tan(Math.max(p.h, 0.002) / 2));
+    return Math.min(80, Math.max(1.5, tr.cls === 'person' ? dh : (dw + dh) / 2));
+  };
+  return T;
+}
+// box (normalized image coords) + head quaternion at capture -> world direction
+function boxToAngular(b, q, hfovDeg, aspect){
+  const tx = Math.tan(THREE.MathUtils.degToRad(hfovDeg) / 2), ty = tx / aspect;
+  const cx = (b.x + b.w / 2 - 0.5) * 2 * tx, cy = -(b.y + b.h / 2 - 0.5) * 2 * ty;
+  const v = new THREE.Vector3(cx, cy, -1).normalize().applyQuaternion(q);
+  return { az: Math.atan2(-v.x, -v.z), el: Math.asin(Math.max(-1, Math.min(1, v.y))),
+           w: 2 * Math.atan(b.w * tx), h: 2 * Math.atan(b.h * ty), c: b.c, s: b.s, img: b };
+}
+const dirFromAngles = (az, el, out = new THREE.Vector3()) => out.set(-Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
 
 // ---------- role pick ----------
 if (navigator.xr) navigator.xr.isSessionSupported('immersive-ar').then(ok => { $('pickHint').textContent = ok ? 'This device supports mixed reality — probably the headset.' : 'No mixed reality here — probably the phone.'; }).catch(()=>{});
@@ -164,7 +229,8 @@ function startHeadset(){
     stream: null, cams: [], camIdx: 0, video: document.createElement('video'),
     detSrc: 'off', boxes: [], boxAt: 0, inferMs: 0, det: rateTracker(), call: null,
     corrOn: true, gain: 1.0, carYaw0: 0, headYaw: 0,
-    model: 'not loaded', camFps: rateTracker(), detErr: '', loopId: 0 };
+    model: 'not loaded', camFps: rateTracker(), detErr: '', loopId: 0,
+    trk: makeTracker(), hfov: +(store.get('hfov') || 72) };
   S.video.playsInline = true; S.video.muted = true;
 
   let peer, idTries = 0;
@@ -192,7 +258,7 @@ function startHeadset(){
     c.on('data', m => {
       if (m.t === 'imu') { S.carYaw = m.yaw; S.carRate = m.rate; }
       else if (m.t === 'gps') S.gps = m;
-      else if (m.t === 'det') { S.boxes = m.boxes; S.boxAt = now(); S.inferMs = m.ms; S.det.tick(); }
+      else if (m.t === 'det') { S.inferMs = m.ms; S.det.tick(); onDets(m.boxes, now() - m.ms - (S.rtt || 20) / 2 - 80); }   // estimate when the frame was captured
       else if (m.t === 'pong') S.rtt = now() - m.ts;
     });
   }
@@ -265,9 +331,11 @@ function startHeadset(){
       if (S.video.readyState >= 2 && (!S.video.requestVideoFrameCallback || S.frameNo !== S.lastDetFrame)) {
         S.lastDetFrame = S.frameNo;
         try {
+          const t0 = now();
           const r = await detectOnce(model, S.video);
           if (S.detSrc !== 'quest') break;
-          S.boxes = r.boxes; S.boxAt = now(); S.inferMs = r.ms; S.det.tick(); S.detErr = '';
+          S.inferMs = r.ms; S.det.tick(); S.detErr = '';
+          onDets(r.boxes, t0 - 40);              // camera frames are ~40 ms old when read
         } catch (e) {
           if (S.detErr !== e.message) log('Detect error: ' + e.message);
           S.detErr = e.message; await new Promise(r => setTimeout(r, 500));
@@ -293,11 +361,14 @@ function startHeadset(){
     else { hx.fillStyle = '#555'; hx.font = '24px sans-serif'; hx.fillText('camera off', 180, 200); }
     const age = now() - S.boxAt;
     hx.lineWidth = 3; hx.font = 'bold 18px sans-serif';
-    for (const b of S.boxes) {
-      if (age > 1500) break;
-      hx.strokeStyle = b.c === 'person' ? '#4fd18b' : '#ff8a2a';
+    hx.lineWidth = 1; hx.strokeStyle = 'rgba(255,255,255,.35)';
+    if (age < 1500) for (const b of S.boxes) hx.strokeRect(b.x * 512, b.y * 384, b.w * 512, b.h * 384);
+    hx.lineWidth = 3;
+    for (const tr of S.trk.list) {
+      if (!tr.ok || !tr.img || now() - tr.seen > 300) continue;
+      const b = tr.img; hx.strokeStyle = hx.fillStyle = trackColor(tr.id);
       hx.strokeRect(b.x * 512, b.y * 384, b.w * 512, b.h * 384);
-      hx.fillStyle = hx.strokeStyle; hx.fillText(`${b.c} ${Math.round(b.s*100)}%`, b.x * 512 + 4, b.y * 384 + 20);
+      hx.fillText(`#${tr.id} ${tr.cls}`, b.x * 512 + 4, b.y * 384 + 20);
     }
     const g = S.gps, f = v => v == null ? '–' : v;
     const lines = [
@@ -306,7 +377,7 @@ function startHeadset(){
       S.camWarn ? S.camWarn : `Camera: ${S.stream ? (S.camFps.fps > 0.5 ? 'LIVE ' + S.camFps.fps.toFixed(0) + ' fps' : 'FROZEN') : 'OFF'}  Model: ${S.model}`,
       `Detect: ${S.detSrc.toUpperCase()}  ${S.det.fps.toFixed(1)} /s  infer ${S.inferMs.toFixed(0)} ms`,
       S.detErr ? `ERROR: ${S.detErr.slice(0, 40)}` : `Grip (right) = change detect mode`,
-      `Boxes: ${S.boxes.length}  age ${S.boxAt ? Math.round(age) + ' ms' : '–'}`,
+      `Tracks: ${S.trk.list.filter(x => x.ok).length} (+${S.trk.list.filter(x => !x.ok).length} new)  boxes ${S.boxes.length}  FOV ${S.hfov}°`,
       `Correction: ${S.corrOn ? 'ON' : 'OFF'}  strength ${S.gain.toFixed(2)}`,
       `Car yaw ${(S.carYaw - S.carYaw0).toFixed(1)}°  rate ${S.carRate.toFixed(1)}°/s`,
       `Head yaw ${S.headYaw.toFixed(1)}°`,
@@ -394,6 +465,66 @@ function startHeadset(){
   let baseYaw = 0;
   const tmpQ = new THREE.Quaternion(), tmpE = new THREE.Euler(), headPos = new THREE.Vector3();
 
+  // ---------- tracking: head-pose history, detections in, 3D markers out ----------
+  const poseBuf = [];                          // recent head orientations, to look up the pose at capture time
+  function poseAt(t){
+    if (!poseBuf.length) return new THREE.Quaternion();
+    let best = poseBuf[0]; for (const p of poseBuf) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
+    return best.q;
+  }
+  function onDets(boxes, tCap){
+    S.boxes = boxes.filter(b => b.s >= 0.3); S.boxAt = now();
+    const aspect = (S.video.videoWidth || 640) / (S.video.videoHeight || 480), q = poseAt(tCap);
+    S.trk.update(boxes.map(b => boxToAngular(b, q, S.hfov, aspect)), tCap);
+  }
+  function trackColor(id){ return `hsl(${(id * 67) % 360} 90% 60%)`; }
+  const markers = new Map();
+  const sqGeo = new THREE.BufferGeometry().setFromPoints([[-.5, -.5], [.5, -.5], [.5, .5], [-.5, .5]].map(([x, y]) => new THREE.Vector3(x, y, 0)));
+  function makeMarker(tr){
+    const col = new THREE.Color(trackColor(tr.id));
+    const grp = new THREE.Group();
+    const box = new THREE.LineLoop(sqGeo, new THREE.LineBasicMaterial({ color: col, depthTest: false, transparent: true }));
+    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
+    const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+    const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+    grp.add(box, label); grp.renderOrder = 10;
+    const tg = new THREE.BufferGeometry(); tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(90), 3));
+    const trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthTest: false }));
+    scene.add(grp, trail);
+    return { grp, box, label, cv, tex, trail, text: '' };
+  }
+  const tmpV = new THREE.Vector3();
+  function updateMarkers(){
+    const t = now(); S.trk.prune(t);
+    const alive = new Set();
+    for (const tr of S.trk.list) {
+      if (!tr.ok) continue;
+      alive.add(tr.id);
+      const mk = markers.get(tr.id) || (markers.set(tr.id, makeMarker(tr)), markers.get(tr.id));
+      const p = S.trk.pred(tr, t), d = S.trk.distance(tr, p);
+      dirFromAngles(p.az, p.el, tmpV);
+      mk.grp.position.copy(headPos).addScaledVector(tmpV, d); mk.grp.lookAt(headPos);
+      const bw = 2 * d * Math.tan(p.w / 2), bh = 2 * d * Math.tan(p.h / 2);
+      mk.box.scale.set(bw, bh, 1);
+      mk.label.position.set(0, bh / 2 + d * 0.03, 0); mk.label.scale.set(d * 0.16, d * 0.04, 1);
+      const coasting = t - tr.seen > 150;
+      mk.box.material.opacity = coasting ? 0.4 : 1;
+      const text = `#${tr.id} ${tr.cls} ${d.toFixed(0)} m${coasting ? ' …' : ''}`;
+      if (text !== mk.text) {
+        const c = mk.cv.getContext('2d'); c.clearRect(0, 0, 256, 64);
+        c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(0, 0, 256, 64);
+        c.fillStyle = trackColor(tr.id); c.font = 'bold 34px sans-serif'; c.fillText(text, 10, 44);
+        mk.tex.needsUpdate = true; mk.text = text;
+      }
+      const pos = mk.trail.geometry.attributes.position;
+      tr.trail.forEach(([az, el], i) => { dirFromAngles(az, el, tmpV); tmpV.multiplyScalar(d).add(headPos); pos.setXYZ(i, tmpV.x, tmpV.y, tmpV.z); });
+      pos.needsUpdate = true; mk.trail.geometry.setDrawRange(0, tr.trail.length);
+    }
+    for (const [id, mk] of markers) if (!alive.has(id)) {
+      scene.remove(mk.grp, mk.trail); mk.tex.dispose(); mk.trail.geometry.dispose(); markers.delete(id);
+    }
+  }
+
   function recenter(){
     pivot.position.copy(headPos); baseYaw = THREE.MathUtils.degToRad(S.headYaw); S.carYaw0 = S.carYaw;
     log('Recentered');
@@ -414,6 +545,11 @@ function startHeadset(){
         if (Math.abs(x) > 0.6 && !pb.stick) { S.gain = Math.round((S.gain + Math.sign(x) * 0.05) * 100) / 100; pb.stick = true; }
         if (Math.abs(x) < 0.3) pb.stick = false;
       }
+      if (h === 'left') {                      // left stick ←/→ = camera field of view (line markers up with real objects)
+        const lx = gp.axes[2] ?? 0;
+        if (Math.abs(lx) > 0.6 && !pb.stick) { S.hfov = Math.max(40, Math.min(120, S.hfov + Math.sign(lx))); store.set('hfov', S.hfov); pb.stick = true; }
+        if (Math.abs(lx) < 0.3) pb.stick = false;
+      }
       if (h === 'left') {                      // hold Y for 1 s to quit
         if (pressed(5)) { pb.yAt ??= now(); if (now() - pb.yAt > 1000) { pb.yAt = Infinity; quitApp(); } }
         else pb.yAt = null;
@@ -426,13 +562,15 @@ function startHeadset(){
     const xrCam = renderer.xr.getCamera();
     xrCam.getWorldQuaternion(tmpQ); xrCam.getWorldPosition(headPos);
     tmpE.setFromQuaternion(tmpQ, 'YXZ'); S.headYaw = THREE.MathUtils.radToDeg(tmpE.y);
+    poseBuf.push({ t: now(), q: tmpQ.clone() }); if (poseBuf.length > 150) poseBuf.shift();
+    updateMarkers();
     if (needRecenter && frame) { recenter(); needRecenter = false; }
     const corr = S.corrOn ? S.gain * THREE.MathUtils.degToRad(S.carYaw - S.carYaw0) : 0;
     pivot.rotation.y = baseYaw + corr;
     if (frame) { pollPads(renderer.xr.getSession()); checkFingerQuit(); }
     if (t - lastHud > 90) { drawHud(); lastHud = t; }
     if (t - lastSend > 100 && S.conn?.open) {
-      S.conn.send({ t: 'h', yaw: +S.headYaw.toFixed(2), corr: S.corrOn ? 1 : 0, gain: S.gain, det: S.detSrc, fps: +S.det.fps.toFixed(1), ms: Math.round(S.inferMs), n: S.boxes.length });
+      S.conn.send({ t: 'h', yaw: +S.headYaw.toFixed(2), corr: S.corrOn ? 1 : 0, gain: S.gain, det: S.detSrc, fps: +S.det.fps.toFixed(1), ms: Math.round(S.inferMs), n: S.boxes.length, tk: S.trk.list.filter(x => x.ok).length });
       lastSend = t;
     }
     if (renderer.xr.isPresenting) renderer.render(scene, camera);
@@ -504,7 +642,7 @@ function startPhone(){
       P.head = m; $('sHead').textContent = m.yaw.toFixed(1);
       const g = P.gps || {};
       P.rows.push([Date.now(), P.yaw.toFixed(2), P.rate.toFixed(2), P.compass ?? '', g.lat ?? '', g.lon ?? '', g.spd ?? '', g.hdg ?? '', g.acc ?? '',
-        m.yaw, m.corr, m.gain, m.det, m.fps, m.ms, m.n].join(','));
+        m.yaw, m.corr, m.gain, m.det, m.fps, m.ms, m.n, m.tk ?? ''].join(','));
       if (P.rows.length % 10 === 0) $('pLogInfo').textContent = P.rows.length + ' rows logged';
     }
   }
@@ -589,7 +727,7 @@ function startPhone(){
 
   // log export
   $('pDl').onclick = () => {
-    const head = 'time_ms,car_yaw,car_rate,compass,lat,lon,gps_speed_mps,gps_heading,gps_acc_m,head_yaw,corr_on,gain,det_src,det_fps,infer_ms,boxes';
+    const head = 'time_ms,car_yaw,car_rate,compass,lat,lon,gps_speed_mps,gps_heading,gps_acc_m,head_yaw,corr_on,gain,det_src,det_fps,infer_ms,boxes,tracks';
     const blob = new Blob([head + '\n' + P.rows.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
     a.download = `car-mr-log-${new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')}.csv`; a.click();
