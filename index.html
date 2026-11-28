@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.3.1</title>
+<title>Car MR Test 0.4.0</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.3.1 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.4.0 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -65,7 +65,7 @@ video{width:100%;border-radius:10px;background:#000}
     </div>
     <div class="card">
       <button class="p" id="hXR">2. Enter mixed reality</button>
-      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>left stick ←/→</b> = camera field of view (adjust until markers sit on the real objects) · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
+      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>left stick ←/→</b> = camera field of view (adjust until markers sit on the real objects) · <b>select / unselect</b> = point at a tracked box and pull the trigger or pinch (on this page: tap a box in the preview) · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
     </div>
     <canvas id="hudPreview" width="1024" height="400"></canvas>
     <div id="log"></div>
@@ -109,7 +109,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -182,7 +182,7 @@ function makeTracker(){
     const b = match(a.unT, lo, t);  b.m.forEach(([tr, d]) => apply(tr, d, t));   // second pass: low-confidence boxes keep tracks alive
     const lost = new Set(b.unT.filter(tr => !tr.ok));                            // tentative tracks die on their first miss
     T.list = T.list.filter(tr => !lost.has(tr));
-    for (const d of a.unD) T.list.push({ id: T.nextId++, az: d.az, el: d.el, vaz: 0, vel: 0, w: d.w, h: d.h, t, seen: t, hits: 1, ok: false, cls: d.c, s: d.s, img: d.img, trail: [[d.az, d.el]] });
+    for (const d of a.unD) T.list.push({ id: T.nextId++, az: d.az, el: d.el, vaz: 0, vel: 0, w: d.w, h: d.h, t, seen: t, hits: 1, ok: false, cls: d.c, s: d.s, img: d.img, trail: [[d.az, d.el]], props: { selected: false } });
   };
   T.prune = t => { T.list = T.list.filter(tr => t - tr.seen < MAX_MISS_MS); };
   T.distance = (tr, p) => {                      // rough range from the object's known real size
@@ -370,9 +370,11 @@ function startHeadset(){
     hx.lineWidth = 3;
     for (const tr of S.trk.list) {
       if (!tr.ok || !tr.img || now() - tr.seen > 300) continue;
-      const b = tr.img; hx.strokeStyle = hx.fillStyle = trackColor(tr.id);
+      const b = tr.img, sel = tr.props.selected;
+      if (sel) { hx.lineWidth = 7; hx.strokeStyle = '#fff'; hx.strokeRect(b.x * 512, b.y * 384, b.w * 512, b.h * 384); hx.lineWidth = 3; }
+      hx.strokeStyle = hx.fillStyle = trackColor(tr.id);
       hx.strokeRect(b.x * 512, b.y * 384, b.w * 512, b.h * 384);
-      hx.fillText(`#${tr.id} ${tr.cls}`, b.x * 512 + 4, b.y * 384 + 20);
+      hx.fillText(`${sel ? '★ ' : ''}#${tr.id} ${tr.cls}`, b.x * 512 + 4, b.y * 384 + 20);
     }
     const g = S.gps, f = v => v == null ? '–' : v;
     const lines = [
@@ -381,7 +383,7 @@ function startHeadset(){
       S.camWarn ? S.camWarn : `Camera: ${S.stream ? ((S.camFpsVal ?? 0) > 0.5 ? 'LIVE ' + S.camFpsVal.toFixed(0) + ' fps' : 'FROZEN') : 'OFF'}  Model: ${S.model}`,
       `Detect: ${S.detSrc.toUpperCase()}  ${S.det.fps.toFixed(1)} /s  infer ${S.inferMs.toFixed(0)} ms`,
       S.detErr ? `ERROR: ${S.detErr.slice(0, 40)}` : `Grip (right) = change detect mode`,
-      `Tracks: ${S.trk.list.filter(x => x.ok).length} (+${S.trk.list.filter(x => !x.ok).length} new)  boxes ${S.boxes.length}  FOV ${S.hfov}°`,
+      `Tracks: ${S.trk.list.filter(x => x.ok).length} (+${S.trk.list.filter(x => !x.ok).length} new, ★${S.trk.list.filter(x => x.ok && x.props.selected).length})  boxes ${S.boxes.length}  FOV ${S.hfov}°`,
       `Correction: ${S.corrOn ? 'ON' : 'OFF'}  strength ${S.gain.toFixed(2)}`,
       `Car yaw ${(S.carYaw - S.carYaw0).toFixed(1)}°  rate ${S.carRate.toFixed(1)}°/s`,
       `Head yaw ${S.headYaw.toFixed(1)}°`,
@@ -441,6 +443,8 @@ function startHeadset(){
       ray.ray.origin.setFromMatrixPosition(c.matrixWorld);
       ray.ray.direction.set(0, 0, -1).applyMatrix4(rayM);
       if (ray.intersectObject(quitBtn).length) { quitApp(); return; }
+      const hitT = ray.intersectObjects(hitTargets, false)[0];
+      if (hitT) { const tr = S.trk.list.find(x => x.id === hitT.object.userData.trackId); if (tr) { toggleSelect(tr); return; } }
       const src = c.userData.src;
       if (src && (src.hand || !src.gamepad)) needRecenter = true;   // hand pinch elsewhere = recenter
     });
@@ -481,6 +485,20 @@ function startHeadset(){
     const aspect = (S.video.videoWidth || 640) / (S.video.videoHeight || 480), q = poseAt(tCap);
     S.trk.update(boxes.map(b => boxToAngular(b, q, S.hfov, aspect)), tCap);
   }
+  function toggleSelect(tr){
+    tr.props.selected = !tr.props.selected;
+    log(`#${tr.id} ${tr.cls} ${tr.props.selected ? 'selected' : 'unselected'}`);
+  }
+  // tap a tracked box in the page preview to select / unselect it
+  $('hudPreview').addEventListener('click', e => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - r.left) * 1024 / r.width, y = (e.clientY - r.top) * 400 / r.height;
+    if (x > 512 || y > 384) return;
+    const u = x / 512, v = y / 384;
+    const hit = S.trk.list.filter(tr => tr.ok && tr.img && u >= tr.img.x && u <= tr.img.x + tr.img.w && v >= tr.img.y && v <= tr.img.y + tr.img.h)
+      .sort((a, b) => a.img.w * a.img.h - b.img.w * b.img.h)[0];     // smallest box wins when boxes overlap
+    if (hit) toggleSelect(hit);
+  });
   function trackColor(id){ return `hsl(${(id * 67) % 360} 90% 60%)`; }
   const markers = new Map();
   const sqGeo = new THREE.BufferGeometry().setFromPoints([[-.5, -.5], [.5, -.5], [.5, .5], [-.5, .5]].map(([x, y]) => new THREE.Vector3(x, y, 0)));
@@ -488,17 +506,22 @@ function startHeadset(){
     const col = new THREE.Color(trackColor(tr.id));
     const grp = new THREE.Group();
     const box = new THREE.LineLoop(sqGeo, new THREE.LineBasicMaterial({ color: col, depthTest: false, transparent: true }));
-    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 128;
     const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
     const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
     const fill = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.2, depthTest: false, side: THREE.DoubleSide }));
     box.add(fill);                               // fill scales with the outline
-    grp.add(box, label); grp.renderOrder = 10;
+    const selBox = new THREE.LineLoop(sqGeo, new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true }));
+    selBox.visible = false;
+    const hit = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }));
+    hit.userData.trackId = tr.id; hitTargets.push(hit);   // easier-to-hit area for pointing and pinching
+    grp.add(box, selBox, label, hit); grp.renderOrder = 10;
     const tg = new THREE.BufferGeometry(); tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(90), 3));
     const trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthTest: false }));
     scene.add(grp, trail);
-    return { grp, box, label, cv, tex, trail, text: '' };
+    return { grp, box, selBox, fill, hit, label, cv, tex, trail, text: '' };
   }
+  const hitTargets = [];
   const tmpV = new THREE.Vector3();
   function updateMarkers(){
     const t = now(); S.trk.prune(t);
@@ -512,14 +535,21 @@ function startHeadset(){
       mk.grp.position.copy(headPos).addScaledVector(tmpV, d); mk.grp.lookAt(headPos);
       const bw = 2 * d * Math.tan(p.w / 2), bh = 2 * d * Math.tan(p.h / 2);
       mk.box.scale.set(bw, bh, 1);
-      mk.label.position.set(0, bh / 2 + d * 0.03, 0); mk.label.scale.set(d * 0.16, d * 0.04, 1);
+      const sel = tr.props.selected, minHit = d * 0.12;
+      mk.hit.scale.set(Math.max(bw * 1.2, minHit), Math.max(bh * 1.2, minHit), 1);
+      mk.selBox.visible = sel; mk.selBox.scale.set(bw * 1.12 + d * 0.01, bh * 1.12 + d * 0.01, 1);
+      mk.selBox.material.opacity = 0.75 + 0.25 * Math.sin(t / 150);     // gentle pulse
+      mk.fill.material.opacity = sel ? 0.45 : 0.2;
+      mk.label.position.set(0, bh / 2 + d * 0.05, 0); mk.label.scale.set(d * 0.2, d * 0.05, 1);
       const coasting = t - tr.seen > 150;
       mk.box.material.opacity = coasting ? 0.4 : 1;
-      const text = `#${tr.id} ${tr.cls} ${d.toFixed(0)} m${coasting ? ' …' : ''}`;
+      const text = `#${tr.id} ${tr.cls} ${d.toFixed(0)} m${coasting ? ' …' : ''}|${sel ? '★ SELECTED' : ''}`;
       if (text !== mk.text) {
-        const c = mk.cv.getContext('2d'); c.clearRect(0, 0, 256, 64);
-        c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(0, 0, 256, 64);
-        c.fillStyle = trackColor(tr.id); c.font = 'bold 34px sans-serif'; c.fillText(text, 10, 44);
+        const c = mk.cv.getContext('2d'); c.clearRect(0, 0, 512, 128);
+        const [l1, l2] = text.split('|');
+        c.fillStyle = sel ? 'rgba(255,255,255,.9)' : 'rgba(0,0,0,.55)'; c.fillRect(0, 0, 512, l2 ? 128 : 64);
+        c.fillStyle = sel ? '#111' : trackColor(tr.id); c.font = 'bold 40px sans-serif'; c.fillText(l1, 14, 48);
+        if (l2) c.fillText(l2, 14, 112);
         mk.tex.needsUpdate = true; mk.text = text;
       }
       const pos = mk.trail.geometry.attributes.position;
@@ -528,6 +558,7 @@ function startHeadset(){
     }
     for (const [id, mk] of markers) if (!alive.has(id)) {
       scene.remove(mk.grp, mk.trail); mk.tex.dispose(); mk.trail.geometry.dispose(); markers.delete(id);
+      hitTargets.splice(hitTargets.indexOf(mk.hit), 1);
     }
   }
 
