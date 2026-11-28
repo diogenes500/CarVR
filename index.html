@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.4.1</title>
+<title>Car MR Test 0.4.2</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.4.1 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.4.2 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -80,13 +80,14 @@ video{width:100%;border-radius:10px;background:#000}
       <div id="pConn" class="bad">Not connected</div>
     </div>
     <div class="card">
-      <button class="p" id="pSensors">Tap to start sensors</button>
+      <button class="p" id="pSensors">Start sensors</button>
       <button id="pFlip">Flip turn sign</button>
       <div class="v">iOS needs one tap per visit for motion — any tap on the page works. GPS starts by itself once Location is set to Allow. Mount the phone firmly. Sign check: rotate the phone flat to the <b>left</b> — "Car yaw" should go <b>up</b>. If it goes down, tap Flip.</div>
     </div>
     <div class="grid">
       <div class="stat"><b id="sYaw">–</b><span>Car yaw (°)</span></div>
       <div class="stat"><b id="sRate">–</b><span>Turn rate (°/s)</span></div>
+      <div class="stat"><b id="sTilt">–</b><span>Pitch+roll rate (°/s) / tilt (°)</span></div>
       <div class="stat"><b id="sSpd">–</b><span>GPS speed (mph)</span></div>
       <div class="stat"><b id="sHdg">–</b><span>Compass / GPS heading</span></div>
       <div class="stat"><b id="sHead">–</b><span>Headset yaw (°)</span></div>
@@ -114,7 +115,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.4.1';
+const VERSION = '0.4.2';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -684,7 +685,8 @@ function startPhone(){
       P.head = m; $('sHead').textContent = m.yaw.toFixed(1);
       const g = P.gps || {};
       P.rows.push([Date.now(), P.yaw.toFixed(2), P.rate.toFixed(2), P.compass ?? '', g.lat ?? '', g.lon ?? '', g.spd ?? '', g.hdg ?? '', g.acc ?? '',
-        m.yaw, m.corr, m.gain, m.det, m.fps, m.ms, m.n, m.tk ?? ''].join(','));
+        m.yaw, m.corr, m.gain, m.det, m.fps, m.ms, m.n, m.tk ?? '',
+        (P.tiltRate ?? 0).toFixed(2), (P.tilt ?? 0).toFixed(2), ...(P.w || [0, 0, 0]).map(v => v.toFixed(2)), ...(P.gFast || [0, 0, 0]).map(v => v.toFixed(3))].join(','));
       if (P.rows.length % 10 === 0) $('pLogInfo').textContent = P.rows.length + ' rows logged';
     }
   }
@@ -710,25 +712,40 @@ function startPhone(){
   // Request permissions synchronously inside the tap (iOS needs the user gesture),
   // and never let one failure stop the other sensors.
   let motionCount = 0, motionOn = false, compassOn = false;
-  $('pSensors').onclick = startSensors;
-  document.addEventListener('click', startSensors, { once: true });   // first tap anywhere counts
-  navigator.permissions?.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') startGps(); }).catch(() => {});
+  P.stopped = false;
+  $('pSensors').onclick = () => motionOn ? stopSensors() : startSensors();
+  document.addEventListener('click', e => { if (e.target.id !== 'pSensors' && !P.stopped) startSensors(); }, { once: true });   // first tap anywhere counts
+  navigator.permissions?.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted' && !P.stopped) startGps(); }).catch(() => {});
+  const onMotionEv = e => { motionCount++; onMotion(e); };
+  const onOrientEv = e => { if (e.webkitCompassHeading != null) P.compass = Math.round(e.webkitCompassHeading); };
+  function stopSensors(){
+    P.stopped = true;
+    window.removeEventListener('devicemotion', onMotionEv); window.removeEventListener('deviceorientation', onOrientEv);
+    motionOn = false; compassOn = false;
+    if (gpsWatch != null) { navigator.geolocation.clearWatch(gpsWatch); gpsWatch = null; }
+    P.wake?.release().catch(() => {}); P.wake = null;
+    P.rate = 0; P.tiltRate = 0;
+    $('sMot').textContent = 'off'; $('sMot').className = ''; $('sGps').textContent = 'off'; $('sGps').className = '';
+    $('pSensors').textContent = 'Start sensors'; $('pSensors').className = 'p';
+    plog('Sensors stopped');
+  }
   function startSensors(){
     if (motionOn) return;
+    P.stopped = false;
     const ask = E => (typeof E !== 'undefined' && typeof E.requestPermission === 'function') ? E.requestPermission() : Promise.resolve('granted');
     const pm = ask(window.DeviceMotionEvent), po = ask(window.DeviceOrientationEvent);
     if (gpsWatch == null) startGps();
     pm.then(st => {
       if (st !== 'granted') { $('sMot').textContent = 'denied'; $('sMot').className = 'bad'; plog('Motion permission: ' + st); return; }
-      if (!motionOn) window.addEventListener('devicemotion', e => { motionCount++; onMotion(e); });
-      motionOn = true; $('pSensors').textContent = 'Sensors on'; $('pSensors').disabled = true;
+      if (!motionOn) window.addEventListener('devicemotion', onMotionEv);
+      motionOn = true; $('pSensors').textContent = 'Stop sensors'; $('pSensors').className = '';
       $('sMot').textContent = 'waiting';
     }).catch(e => { $('sMot').textContent = 'error'; $('sMot').className = 'bad'; plog('Motion permission error: ' + e.message); });
     po.then(st => {
-      if (st === 'granted' && !compassOn && (compassOn = true)) window.addEventListener('deviceorientation', e => { if (e.webkitCompassHeading != null) P.compass = Math.round(e.webkitCompassHeading); });
+      if (st === 'granted' && !compassOn && (compassOn = true)) window.addEventListener('deviceorientation', onOrientEv);
       else plog('Compass permission: ' + st);
     }).catch(e => plog('Compass permission error: ' + e.message));
-    navigator.wakeLock?.request('screen').catch(() => {});
+    navigator.wakeLock?.request('screen').then(w => { P.wake = w; }).catch(() => {});
   }
   let gpsWatch = null;
   function startGps(){
@@ -752,8 +769,8 @@ function startPhone(){
     { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
   }
   $('sGps').parentElement.style.cursor = 'pointer';
-  $('sGps').parentElement.addEventListener('click', () => startGps());
-  document.addEventListener('click', () => { if (gpsWatch == null) startGps(); });   // any tap retries after a denial
+  $('sGps').parentElement.addEventListener('click', () => { P.stopped = false; startGps(); });
+  document.addEventListener('click', e => { if (gpsWatch == null && !P.stopped && e.target.id !== 'pSensors') startGps(); });   // any tap retries after a denial
   setInterval(() => { if (motionCount) { $('sMot').textContent = Math.round(motionCount) + ' /s'; $('sMot').className = 'ok'; } motionCount = 0; }, 1000);
   $('pFlip').onclick = () => { P.sign *= -1; plog('Turn sign flipped'); };
   $('pZero').onclick = () => { P.yaw = 0; };
@@ -769,17 +786,26 @@ function startPhone(){
     const rate = P.sign * (w[0] * P.g[0] + w[1] * P.g[1] + w[2] * P.g[2]) / n;
     const t = e.timeStamp, dt = P.lastT ? Math.min((t - P.lastT) / 1000, 0.1) : 0; P.lastT = t;
     P.rate = rate; P.yaw += rate * dt;
+    // pitch/roll: rotation about axes perpendicular to gravity, and tilt of the short-term
+    // gravity direction away from its ~10 s average (braking, accelerating, cornering, hills)
+    const gh = P.g.map(v => v / n), wy = (w[0] * gh[0] + w[1] * gh[1] + w[2] * gh[2]);
+    P.tiltRate = Math.hypot(w[0] - wy * gh[0], w[1] - wy * gh[1], w[2] - wy * gh[2]);
+    P.gRef = P.gRef ? P.gRef.map((v, i) => v + 0.002 * (P.g[i] - v)) : P.g.slice();
+    const nr = Math.hypot(...P.gRef) || 1, cosT = (P.g[0] * P.gRef[0] + P.g[1] * P.gRef[1] + P.g[2] * P.gRef[2]) / (n * nr);
+    P.tilt = Math.acos(Math.max(-1, Math.min(1, cosT))) * 180 / Math.PI;
+    P.w = w; P.gFast = [a.x ?? 0, a.y ?? 0, a.z ?? 0];
   }
   setInterval(() => {
     $('sYaw').textContent = P.yaw.toFixed(1);
     $('sRate').textContent = P.rate.toFixed(1);
+    $('sTilt').textContent = `${(P.tiltRate ?? 0).toFixed(1)} / ${(P.tilt ?? 0).toFixed(1)}`;
     const gh = P.gps?.hdg; $('sHdg').textContent = `${P.compass ?? '–'} / ${gh != null && !isNaN(gh) ? Math.round(gh) : '–'}`;
     P.conn?.send({ t: 'imu', yaw: +P.yaw.toFixed(3), rate: +P.rate.toFixed(2) });
   }, 33);
 
   // log export
   $('pDl').onclick = () => {
-    const head = 'time_ms,car_yaw,car_rate,compass,lat,lon,gps_speed_mps,gps_heading,gps_acc_m,head_yaw,corr_on,gain,det_src,det_fps,infer_ms,boxes,tracks';
+    const head = 'time_ms,car_yaw,car_rate,compass,lat,lon,gps_speed_mps,gps_heading,gps_acc_m,head_yaw,corr_on,gain,det_src,det_fps,infer_ms,boxes,tracks,tilt_rate,tilt_deg,rot_x,rot_y,rot_z,acc_x,acc_y,acc_z';
     const blob = new Blob([head + '\n' + P.rows.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
     a.download = `car-mr-log-${new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')}.csv`; a.click();
