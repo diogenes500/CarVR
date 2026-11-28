@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.4.0</title>
+<title>Car MR Test 0.4.1</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.4.0 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.4.1 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -94,6 +94,11 @@ video{width:100%;border-radius:10px;background:#000}
       <div class="stat"><b id="sMot">off</b><span>Motion sensor</span></div>
       <div class="stat"><b id="sGps" style="font-size:16px">off</b><span>GPS fix (lat, lon ± m)</span></div>
     </div>
+    <div class="card hide bad" id="gpsHelp">
+      <b>Location was denied.</b> To stop this for good: in Safari tap <b>aA</b> → <b>Website Settings</b> → <b>Location: Allow</b>.
+      Also check <b>Settings → Privacy &amp; Security → Location Services → Safari Websites → While Using the App</b>. Don't use a Private tab.
+      Then tap the GPS tile to retry.
+    </div>
     <div class="card">
       <button id="pZero">Zero car yaw</button>
       <button id="pDl">Download log (CSV)</button>
@@ -109,7 +114,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -734,11 +739,21 @@ function startPhone(){
       const c = p.coords, spd = c.speed != null && c.speed >= 0 ? c.speed : null, hdg = c.heading != null && c.heading >= 0 ? c.heading : null;
       P.gps = { t: 'gps', lat: +c.latitude.toFixed(6), lon: +c.longitude.toFixed(6), spd, hdg, acc: Math.round(c.accuracy) };
       P.conn?.send(P.gps);
-      $('sGps').textContent = `${P.gps.lat}, ${P.gps.lon} ±${P.gps.acc}`; $('sGps').className = 'ok';
+      $('sGps').textContent = `${P.gps.lat}, ${P.gps.lon} ±${P.gps.acc}`; $('sGps').className = 'ok'; $('gpsHelp').classList.add('hide');
       $('sSpd').textContent = spd != null ? (spd * 2.237).toFixed(0) : '0 / –';
-    }, e => { $('sGps').textContent = ['', 'denied', 'unavailable', 'timeout'][e.code] || 'error'; $('sGps').className = 'bad'; plog('GPS: ' + e.message); },
+    }, e => {
+      plog('GPS: ' + e.message);
+      if (e.code === 1) {                       // denied: stop, so the next tap asks again
+        navigator.geolocation.clearWatch(gpsWatch); gpsWatch = null;
+        $('sGps').textContent = 'denied — tap here to retry'; $('sGps').className = 'bad';
+        $('gpsHelp').classList.remove('hide');
+      } else if (!P.gps) { $('sGps').textContent = e.code === 3 ? 'still searching…' : 'unavailable — retrying'; $('sGps').className = 'bad'; }
+    },
     { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
   }
+  $('sGps').parentElement.style.cursor = 'pointer';
+  $('sGps').parentElement.addEventListener('click', () => startGps());
+  document.addEventListener('click', () => { if (gpsWatch == null) startGps(); });   // any tap retries after a denial
   setInterval(() => { if (motionCount) { $('sMot').textContent = Math.round(motionCount) + ' /s'; $('sMot').className = 'ok'; } motionCount = 0; }, 1000);
   $('pFlip').onclick = () => { P.sign *= -1; plog('Turn sign flipped'); };
   $('pZero').onclick = () => { P.yaw = 0; };
