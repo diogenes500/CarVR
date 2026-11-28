@@ -1,6 +1,6 @@
 # CarVR
 
-Car MR Test (v0.5.0) — a WebXR test page for Quest 3 + iPhone.
+Car MR Test (v0.6.0) — a WebXR test page for Quest 3 + iPhone.
 
 - Quest 3: mixed-reality scene, passthrough-camera vehicle detection with persistent tracking (IDs, distance, trails), drift-correction test.
 - iPhone: streams GPS, compass and car turn rate to the headset; logs a CSV.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.5.0</title>
+<title>Car MR Test 0.6.0</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.5.0 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.6.0 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -65,7 +65,13 @@ video{width:100%;border-radius:10px;background:#000}
     </div>
     <div class="card">
       <button class="p" id="hXR">2. Enter mixed reality</button>
-      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>left stick ←/→</b> = camera field of view (adjust until markers sit on the real objects) · <b>X</b> (or the green <b>FRONT</b> button, lower left) = mark the car's front: point the right controller / look through the middle of the windshield · <b>select / unselect</b> = point at a tracked box and pull the trigger or pinch (on this page: tap a box in the preview) · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
+      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>left stick ←/→</b> = camera field of view (adjust until markers sit on the real objects) · <b>left stick click</b> = start the usability test / skip a step · <b>X</b> (or the green <b>FRONT</b> button, lower left) = mark the car's front: point the right controller / look through the middle of the windshield · <b>select / unselect</b> = point at a tracked box and pull the trigger or pinch (on this page: tap a box in the preview) · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
+    </div>
+    <div class="card">
+      <b>Phone-sensor usability test</b> (passenger only)
+      <div class="v">Guided steps in the headset: parked, straight, turns, speed-ups/stops, normal ride. At each <b>check</b>, look or point through the middle of the windshield and press X (or FRONT). Takes about 10 minutes. Start here, or with a <b>left stick click</b> in mixed reality. Before starting: phone mounted firmly, connected, sensors on.</div>
+      <button class="p" id="hTest">Run usability test</button>
+      <div id="hTestRes" class="v"></div>
     </div>
     <canvas id="hudPreview" width="1024" height="400"></canvas>
     <div id="log"></div>
@@ -108,6 +114,11 @@ video{width:100%;border-radius:10px;background:#000}
       <button id="pClear">Clear log</button>
       <div class="v" id="pLogInfo">0 rows logged</div>
     </div>
+    <div class="card hide" id="pTest">
+      <b>Usability test</b>
+      <div id="pTestRes" class="v"></div>
+      <button id="pTestDl">Download test report (CSV)</button>
+    </div>
     <video id="pVideo" class="hide" playsinline muted autoplay></video>
     <div id="plog" class="v"></div>
   </section>
@@ -117,7 +128,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -262,7 +273,7 @@ function startHeadset(){
     S.conn = c; S.phoneId = c.peer;
     if (old && old !== c) try { old.close(); } catch {}
     c.on('open', () => { if (S.conn !== c) return; $('hConn').textContent = 'Phone connected'; $('hConn').className = 'ok'; log('Phone connected'); if (S.detSrc === 'phone') startPhoneDet(); });
-    c.on('close', () => { if (S.conn !== c) return; $('hConn').textContent = 'Phone disconnected'; $('hConn').className = 'bad'; S.conn = null; log('Phone link closed'); });
+    c.on('close', () => { if (S.conn !== c) return; $('hConn').textContent = 'Phone disconnected'; $('hConn').className = 'bad'; S.conn = null; log('Phone link closed'); S.linkDrops++; });
     c.on('data', m => {
       if (m.t === 'imu') { S.carYaw = m.yaw; S.carRate = m.rate; }
       else if (m.t === 'gps') S.gps = m;
@@ -598,12 +609,20 @@ function startHeadset(){
   let readText = '';
   function frontWorldYaw(){ return S.frontLocal == null ? null : wrapA(pivot.rotation.y + S.frontLocal); }
   function placeFront(){ const a = S.frontLocal ?? 0; front.position.set(-Math.sin(a) * 3, 0, -Math.cos(a) * 3); }
-  function markFront(how){
-    let yaw = THREE.MathUtils.degToRad(S.headYaw);
-    if (how === 'ray') {                         // point with the right controller if it is there
+  function lookDir(how){                       // radians; right-controller ray if asked and present, else gaze
+    let yaw = THREE.MathUtils.degToRad(S.headYaw), pitch = THREE.MathUtils.degToRad(S.headPitch || 0), src = 'gaze';
+    if (how === 'ray') {
       const rc = [0, 1].map(i => renderer.xr.getController(i)).find(c => c.userData.src?.handedness === 'right' && c.userData.src.gamepad);
-      if (rc) { const d = new THREE.Vector3(0, 0, -1).applyQuaternion(rc.getWorldQuaternion(new THREE.Quaternion())); yaw = Math.atan2(-d.x, -d.z); }
+      if (rc) { const d = new THREE.Vector3(0, 0, -1).applyQuaternion(rc.getWorldQuaternion(new THREE.Quaternion()));
+        yaw = Math.atan2(-d.x, -d.z); pitch = Math.asin(Math.max(-1, Math.min(1, d.y))); src = 'ray'; }
     }
+    return { yaw, pitch, src };
+  }
+  function markFront(how){
+    if (S.test && !S.test.done) { testCheck(how); return; }   // during the usability test X / FRONT = a check
+    markFrontAt(lookDir(how).yaw);
+  }
+  function markFrontAt(yaw){
     S.frontLocal = wrapA(yaw - pivot.rotation.y); placeFront(); front.visible = true;
     log('Car front marked'); S.conn?.open && S.conn.send({ t: 'front' });
   }
@@ -624,6 +643,137 @@ function startHeadset(){
     g.fillStyle = col; g.font = 'bold 54px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 256, 52);
     rTex.needsUpdate = true;
   }
+
+  // ================= USABILITY TEST (phone sensors) =================
+  // A "check" = look / point through the middle of the windshield and press X (or FRONT).
+  // From each check: raw drift (what you'd see with no correction) and corrected drift (with the
+  // phone correction at the current strength) are both computed, so one run measures both.
+  const STEPS = [
+    { id: 'start',    title: 'Start (parked)', text: 'Car parked. Look (or point the right controller) through the MIDDLE of the windshield, then press X / FRONT.', start: true },
+    { id: 'still',    title: '1 · Parked, sit still', text: 'Stay parked. Sit naturally and look around for 30 s.', dur: 30, endCheck: true },
+    { id: 'straight', title: '2 · Drive straight', text: 'Drive straight (no turns) for about 1 minute.', dur: 60, endCheck: true },
+    { id: 'turns',    title: '3 · Turns', text: 'Make turns, left and right. After each turn, once straight again, CHECK the windshield middle.', checks: 6 },
+    { id: 'brake',    title: '4 · Speed up / stop', text: 'Firm speed-ups and stops (safely). CHECK after each one.', checks: 3 },
+    { id: 'free',     title: '5 · Normal ride', text: 'Ride normally for 2 min. Look around, watch traffic. CHECK whenever you remember.', dur: 120 },
+  ];
+  const wrapD = d => ((d + 540) % 360) - 180;
+  const tc = document.createElement('canvas'); tc.width = 1024; tc.height = 300;
+  const tTex = new THREE.CanvasTexture(tc); tTex.colorSpace = THREE.SRGBColorSpace;
+  const testPanel = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.1), new THREE.MeshBasicMaterial({ map: tTex, transparent: true, depthTest: false }));
+  testPanel.position.set(0, 0.15, -0.6); testPanel.rotation.x = 0.2; testPanel.renderOrder = 12; testPanel.visible = false; camera.add(testPanel);
+  S.linkDrops = 0;
+
+  function startTest(){
+    S.test = { i: 0, t0: now(), stepT0: now(), checks: [], base: null, waiting: false, done: false,
+               dropsAt0: S.linkDrops, detSum: 0, detN: 0, stillC0: null, stillC1: null, gain: S.gain };
+    testPanel.visible = true; log('Usability test started'); drawTestPanel(true);
+    S.conn?.open && S.conn.send({ t: 'testStart' });
+  }
+  function testCheck(how){
+    const T = S.test, st = STEPS[T.i], L = lookDir(how);
+    const h = THREE.MathUtils.radToDeg(L.yaw), p = THREE.MathUtils.radToDeg(L.pitch);
+    if (st.start) {
+      T.base = { h, p, C: S.carYaw }; markFrontAt(L.yaw);
+      log(`Test: front set (${L.src})`); advance(); return;
+    }
+    const dC = S.carYaw - T.base.C;                                   // car turned since start (°)
+    const eRaw = wrapD(h - T.base.h);                                 // drift with no correction
+    const eCorr = wrapD(h - T.base.h - T.gain * dC);                  // drift with the phone correction
+    const c = { step: st.id, t: +((now() - T.t0) / 1000).toFixed(1), src: L.src, dC: +dC.toFixed(2), eRaw: +eRaw.toFixed(2), eCorr: +eCorr.toFixed(2), ePitch: +(p - T.base.p).toFixed(2) };
+    T.checks.push(c); flash = now();
+    S.conn?.open && S.conn.send({ t: 'chk', ...c });
+    log(`Check ${T.checks.length}: raw ${c.eRaw}°, corrected ${c.eCorr}°`);
+    if (T.waiting || (st.checks && T.checks.filter(x => x.step === st.id).length >= st.checks)) advance();
+    drawTestPanel(true);
+  }
+  let flash = 0;
+  function advance(){
+    const T = S.test, st = STEPS[T.i];
+    if (st.id === 'still') T.stillC1 = S.carYaw;
+    T.i++; T.stepT0 = now(); T.waiting = false;
+    if (T.i >= STEPS.length) return finishTest();
+    if (STEPS[T.i].id === 'still') T.stillC0 = S.carYaw;
+    drawTestPanel(true);
+  }
+  function testTick(){
+    const T = S.test; if (!T || T.done) return;
+    if (S.detSrc !== 'off') { T.detSum += S.det.fps; T.detN++; }
+    const st = STEPS[T.i];
+    if (st.dur && !T.waiting && now() - T.stepT0 > st.dur * 1000) {
+      if (st.endCheck) T.waiting = true; else advance();
+    }
+    drawTestPanel(false);
+  }
+  const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : NaN;
+  const mabs = a => mean(a.map(Math.abs)), maxabs = a => a.length ? Math.max(...a.map(Math.abs)) : NaN;
+  function finishTest(){
+    const T = S.test; T.done = true;
+    const ck = T.checks, moving = ck.filter(c => c.step !== 'still');
+    // best correction strength: least squares fit of raw drift against car turning
+    const sxy = ck.reduce((a, c) => a + c.eRaw * c.dC, 0), sxx = ck.reduce((a, c) => a + c.dC * c.dC, 0);
+    const gBest = sxx > 25 ? sxy / sxx : null;
+    const eBest = gBest == null ? [] : moving.map(c => wrapD(c.eRaw - gBest * c.dC));
+    const per = STEPS.filter(x => !x.start).map(x => { const a = ck.filter(c => c.step === x.id);
+      return { id: x.id, n: a.length, raw: mabs(a.map(c => c.eRaw)), corr: mabs(a.map(c => c.eCorr)) }; });
+    const R = {
+      when: new Date().toISOString(), version: VERSION, checks: ck.length, gainUsed: T.gain,
+      rawMean: mabs(moving.map(c => c.eRaw)), rawMax: maxabs(moving.map(c => c.eRaw)),
+      corrMean: mabs(moving.map(c => c.eCorr)), corrMax: maxabs(moving.map(c => c.eCorr)),
+      gBest, bestMean: mabs(eBest), bestMax: maxabs(eBest),
+      pitchMean: mabs(moving.map(c => c.ePitch)), pitchMax: maxabs(moving.map(c => c.ePitch)),
+      gyroDrift: T.stillC0 != null && T.stillC1 != null ? (T.stillC1 - T.stillC0) * 2 : null,   // °/min over the 30 s still step
+      turned: maxabs(ck.map(c => c.dC)), drops: S.linkDrops - T.dropsAt0, detFps: T.detN ? T.detSum / T.detN : null, per,
+    };
+    const best = Math.min(isNaN(R.corrMean) ? 99 : R.corrMean, isNaN(R.bestMean) ? 99 : R.bestMean);
+    R.verdict = !moving.length ? 'NOT ENOUGH CHECKS' : best < 3 ? 'GOOD' : best < 6 ? 'USABLE' : 'POOR';
+    T.result = R; store.set('lastTest', JSON.stringify(R)); showTestResult(R);
+    S.conn?.open && S.conn.send({ t: 'res', r: R });
+    log('Usability test finished: ' + R.verdict); drawTestPanel(true);
+  }
+  const f1 = v => v == null || isNaN(v) ? '–' : v.toFixed(1);
+  function resultLines(R){
+    return [
+      `RESULT: ${R.verdict}   (${R.checks} checks, car turned up to ${f1(R.turned)}°)`,
+      `Drift, no correction:   avg ${f1(R.rawMean)}°  max ${f1(R.rawMax)}°`,
+      `Drift, with correction (strength ${R.gainUsed.toFixed(2)}):  avg ${f1(R.corrMean)}°  max ${f1(R.corrMax)}°`,
+      `Best strength ${R.gBest == null ? '– (turn more)' : R.gBest.toFixed(2)}:  avg ${f1(R.bestMean)}°  max ${f1(R.bestMax)}°`,
+      `Pitch drift avg ${f1(R.pitchMean)}°  max ${f1(R.pitchMax)}° · phone gyro drift ${f1(R.gyroDrift)}°/min · link drops ${R.drops}`,
+    ];
+  }
+  function showTestResult(R){
+    const el = $('hTestRes'); el.innerHTML = '';
+    resultLines(R).forEach((l, i) => { const d = document.createElement('div'); d.textContent = l; if (!i) d.className = /GOOD/.test(l) ? 'ok' : /POOR|NOT/.test(l) ? 'bad' : ''; el.append(d); });
+    const d = document.createElement('div'); d.className = 'v'; d.textContent = 'Per step (avg drift raw → corrected): ' + R.per.map(p => `${p.id} ${f1(p.raw)}→${f1(p.corr)}° (${p.n})`).join(' · '); el.append(d);
+  }
+  { const r = store.get('lastTest'); if (r) try { showTestResult(JSON.parse(r)); } catch {} }
+  let lastTP = 0;
+  function drawTestPanel(force){
+    const T = S.test; if (!T) return;
+    if (!force && now() - lastTP < 200) return; lastTP = now();
+    const g = tc.getContext('2d'); g.clearRect(0, 0, 1024, 300);
+    g.fillStyle = now() - flash < 400 ? 'rgba(30,120,60,.85)' : 'rgba(10,14,18,.82)'; g.beginPath(); g.roundRect(0, 0, 1024, 300, 28); g.fill();
+    g.textBaseline = 'top';
+    const wrapText = (txt, x, y, w, lh) => { let line = ''; for (const word of txt.split(' ')) { const t2 = line ? line + ' ' + word : word;
+      if (g.measureText(t2).width > w) { g.fillText(line, x, y); y += lh; line = word; } else line = t2; } g.fillText(line, x, y); };
+    if (T.done) {
+      g.fillStyle = '#ffb35a'; g.font = 'bold 34px sans-serif'; g.fillText('Usability test complete', 30, 20);
+      g.fillStyle = '#e9eef2'; g.font = '26px sans-serif'; resultLines(T.result).forEach((l, i) => g.fillText(l, 30, 70 + i * 40));
+      g.fillStyle = '#93a1ad'; g.font = '22px sans-serif'; g.fillText('Left stick click = hide · results are also on the page and the phone', 30, 270);
+    } else {
+      const st = STEPS[T.i], left = st.dur ? Math.max(0, st.dur - (now() - T.stepT0) / 1000) : null;
+      const nChk = T.checks.filter(c => c.step === st.id).length;
+      g.fillStyle = '#ffb35a'; g.font = 'bold 36px sans-serif';
+      g.fillText(`TEST ${st.title}` + (left != null && !T.waiting ? `   ${Math.ceil(left)} s` : '') + (st.checks ? `   checks ${nChk}/${st.checks}` : ''), 30, 22);
+      g.fillStyle = '#e9eef2'; g.font = '30px sans-serif';
+      wrapText(T.waiting ? 'Now CHECK: look / point through the middle of the windshield and press X / FRONT.' : st.text, 30, 80, 964, 40);
+      const last = T.checks[T.checks.length - 1];
+      g.fillStyle = '#93a1ad'; g.font = '24px sans-serif';
+      g.fillText(last ? `Last check: no correction ${last.eRaw.toFixed(1)}° · corrected ${last.eCorr.toFixed(1)}° · car turned ${last.dC.toFixed(0)}°` : 'Check = X (points with the right controller) or FRONT button (uses your gaze)', 30, 222);
+      g.fillText('Left stick click = skip step', 30, 258);
+    }
+    tTex.needsUpdate = true;
+  }
+  $('hTest').onclick = () => { S.testArmed = true; $('hTest').textContent = 'Test armed — enter mixed reality'; };
 
   function recenter(){
     const keepFront = frontWorldYaw();           // recentering must not move the front marker
@@ -652,7 +802,11 @@ function startHeadset(){
         if (Math.abs(lx) > 0.6 && !pb.stick) { S.hfov = Math.max(40, Math.min(120, S.hfov + Math.sign(lx))); store.set('hfov', S.hfov); pb.stick = true; }
         if (Math.abs(lx) < 0.3) pb.stick = false;
       }
-      if (h === 'left' && edge(4)) markFront('ray');   // X = mark car front
+      if (h === 'left' && edge(4)) markFront('ray');   // X = mark car front (or a test check)
+      if (h === 'left' && edge(3)) {                    // left stick click: start test / skip step / hide results
+        if (!S.test) startTest(); else if (S.test.done) { testPanel.visible = false; S.test = null; }
+        else { if (STEPS[S.test.i].start) markFrontAt(lookDir('gaze').yaw); else advance(); }
+      }
       if (h === 'left') {                      // hold Y for 1 s to quit
         if (pressed(5)) { pb.yAt ??= now(); if (now() - pb.yAt > 1000) { pb.yAt = Infinity; quitApp(); } }
         else pb.yAt = null;
@@ -664,13 +818,13 @@ function startHeadset(){
   renderer.setAnimationLoop((t, frame) => {
     const xrCam = renderer.xr.getCamera();
     xrCam.getWorldQuaternion(tmpQ); xrCam.getWorldPosition(headPos);
-    tmpE.setFromQuaternion(tmpQ, 'YXZ'); S.headYaw = THREE.MathUtils.radToDeg(tmpE.y);
+    tmpE.setFromQuaternion(tmpQ, 'YXZ'); S.headYaw = THREE.MathUtils.radToDeg(tmpE.y); S.headPitch = THREE.MathUtils.radToDeg(tmpE.x);
     poseBuf.push({ t: now(), q: tmpQ.clone() }); if (poseBuf.length > 150) poseBuf.shift();
     updateMarkers();
     if (needRecenter && frame) { recenter(); needRecenter = false; }
     const corr = S.corrOn ? S.gain * THREE.MathUtils.degToRad(S.carYaw - S.carYaw0) : 0;
     pivot.rotation.y = baseYaw + corr;
-    updateReadout();
+    updateReadout(); testTick();
     if (frame) { pollPads(renderer.xr.getSession()); checkFingerQuit(); }
     if (t - lastHud > 90) { drawHud(); lastHud = t; }
     if (t - lastSend > 100 && S.conn?.open) {
@@ -689,6 +843,7 @@ function startHeadset(){
       await renderer.xr.setSession(session);
       session.addEventListener('end', () => { log('Left MR'); renderer.domElement.remove(); });
       needRecenter = true; log('Entered MR');
+      if (S.testArmed) { S.testArmed = false; $('hTest').textContent = 'Run usability test'; startTest(); }
     } catch (e) { log('MR failed: ' + e.message); }
   };
 }
@@ -742,6 +897,11 @@ function startPhone(){
     if (m.t === 'ping') P.conn?.send({ t: 'pong', ts: m.ts });
     else if (m.t === 'detStart') { P.detOn = true; phoneDetLoop(); }
     else if (m.t === 'detStop') { P.detOn = false; $('pVideo').classList.add('hide'); }
+    else if (m.t === 'testStart') { P.checks = []; $('pTest').classList.remove('hide'); $('pTestRes').textContent = 'Test running…'; }
+    else if (m.t === 'chk') { (P.checks ||= []).push(m); $('pTestRes').textContent = `Test running… ${P.checks.length} checks (last: raw ${m.eRaw}°, corrected ${m.eCorr}°)`; }
+    else if (m.t === 'res') { P.result = m.r; $('pTest').classList.remove('hide');
+      const R = m.r, f = v => v == null || isNaN(v) ? '–' : (+v).toFixed(1);
+      $('pTestRes').textContent = `${R.verdict} · drift avg ${f(R.rawMean)}° raw → ${f(R.corrMean)}° corrected (best strength ${R.gBest == null ? '–' : R.gBest.toFixed(2)} → ${f(R.bestMean)}°) · pitch avg ${f(R.pitchMean)}° · gyro drift ${f(R.gyroDrift)}°/min · drops ${R.drops}`; }
     else if (m.t === 'h') {
       P.head = m; $('sHead').textContent = m.yaw.toFixed(1);
       const g = P.gps || {};
@@ -913,6 +1073,14 @@ function startPhone(){
     const blob = new Blob([head + '\n' + P.rows.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
     a.download = `car-mr-log-${new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')}.csv`; a.click();
+  };
+  $('pTestDl').onclick = () => {
+    const R = P.result || {}, ck = P.checks || [];
+    const lines = ['# Car MR usability test report', ...Object.entries(R).filter(([k]) => k !== 'per').map(([k, v]) => `# ${k},${v}`),
+      ...(R.per || []).map(p => `# step ${p.id},checks ${p.n},raw ${p.raw},corrected ${p.corr}`),
+      'step,t_s,source,car_turned_deg,drift_raw_deg,drift_corrected_deg,pitch_drift_deg', ...ck.map(c => [c.step, c.t, c.src, c.dC, c.eRaw, c.eCorr, c.ePitch].join(','))];
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+    a.download = `car-mr-test-${new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')}.csv`; a.click();
   };
   $('pClear').onclick = () => { P.rows = []; $('pLogInfo').textContent = '0 rows logged'; };
 }
