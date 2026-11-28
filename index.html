@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Car MR Test 0.4.2</title>
+<title>Car MR Test 0.5.0</title>
 <style>
 :root{color-scheme:dark;--bg:#101418;--panel:#1b2229;--ink:#e9eef2;--dim:#93a1ad;--acc:#ff8a2a;--ok:#4fd18b;--bad:#ff5a5a}
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ video{width:100%;border-radius:10px;background:#000}
 <body>
 <main>
   <h1>Car MR Test</h1>
-  <div class="v">Version 0.4.2 · Quest 3 + iPhone · passengers only</div>
+  <div class="v">Version 0.5.0 · Quest 3 + iPhone · passengers only</div>
 
   <!-- ROLE PICK -->
   <section id="pick">
@@ -65,7 +65,7 @@ video{width:100%;border-radius:10px;background:#000}
     </div>
     <div class="card">
       <button class="p" id="hXR">2. Enter mixed reality</button>
-      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>left stick ←/→</b> = camera field of view (adjust until markers sit on the real objects) · <b>select / unselect</b> = point at a tracked box and pull the trigger or pinch (on this page: tap a box in the preview) · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
+      <div class="v">In MR: <b>A</b> = drift correction on/off · <b>B</b> = recenter · <b>right stick ←/→</b> = correction strength · <b>right grip</b> = next detection mode · <b>left stick ←/→</b> = camera field of view (adjust until markers sit on the real objects) · <b>X</b> (or the green <b>FRONT</b> button, lower left) = mark the car's front: point the right controller / look through the middle of the windshield · <b>select / unselect</b> = point at a tracked box and pull the trigger or pinch (on this page: tap a box in the preview) · <b>QUIT</b> = red button at the lower right of your view: press it with a fingertip, point and pinch, point and pull the trigger, or hold <b>Y</b> for 1 second · hands: pinch elsewhere = recenter</div>
     </div>
     <canvas id="hudPreview" width="1024" height="400"></canvas>
     <div id="log"></div>
@@ -87,7 +87,8 @@ video{width:100%;border-radius:10px;background:#000}
     <div class="grid">
       <div class="stat"><b id="sYaw">–</b><span>Car yaw (°)</span></div>
       <div class="stat"><b id="sRate">–</b><span>Turn rate (°/s)</span></div>
-      <div class="stat"><b id="sTilt">–</b><span>Pitch+roll rate (°/s) / tilt (°)</span></div>
+      <div class="stat"><b id="sTilt">–</b><span id="sTiltL">Pitch+roll rate (°/s) / tilt (°)</span></div>
+      <div class="stat"><b id="sAxes">–</b><span>Car axes (speed up / brake while driving straight)</span></div>
       <div class="stat"><b id="sSpd">–</b><span>GPS speed (mph)</span></div>
       <div class="stat"><b id="sHdg">–</b><span>Compass / GPS heading</span></div>
       <div class="stat"><b id="sHead">–</b><span>Headset yaw (°)</span></div>
@@ -102,6 +103,7 @@ video{width:100%;border-radius:10px;background:#000}
     </div>
     <div class="card">
       <button id="pZero">Zero car yaw</button>
+      <button id="pAxesReset">Reset car axes</button>
       <button id="pDl">Download log (CSV)</button>
       <button id="pClear">Clear log</button>
       <div class="v" id="pLogInfo">0 rows logged</div>
@@ -115,7 +117,7 @@ video{width:100%;border-radius:10px;background:#000}
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
-const VERSION = '0.4.2';
+const VERSION = '0.5.0';
 const $ = id => document.getElementById(id);
 const PREFIX = 'hjcarmr-';
 const VEH = new Set(['car','truck','bus','motorcycle','bicycle','person']);
@@ -411,31 +413,38 @@ function startHeadset(){
   const hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.25), new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, opacity: 0.92 }));
   hudMesh.position.set(0, -0.32, -0.9); hudMesh.rotation.x = -0.3; camera.add(hudMesh);
 
-  // QUIT button: head-locked, to the right of the HUD
-  const qc = document.createElement('canvas'); qc.width = 256; qc.height = 128;
-  { const q = qc.getContext('2d'); q.fillStyle = '#d93a3a'; q.beginPath(); q.roundRect(4, 4, 248, 120, 28); q.fill();
-    q.fillStyle = '#fff'; q.font = 'bold 56px sans-serif'; q.textAlign = 'center'; q.textBaseline = 'middle'; q.fillText('QUIT', 128, 66); }
-  const qTex = new THREE.CanvasTexture(qc); qTex.colorSpace = THREE.SRGBColorSpace;
-  // lower right of the view, within arm's reach so a fingertip can press it
-  const quitBtn = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.045), new THREE.MeshBasicMaterial({ map: qTex, transparent: true }));
-  quitBtn.position.set(0.21, -0.17, -0.45); quitBtn.rotation.set(-0.35, -0.3, 0); camera.add(quitBtn);
+  // Head-locked buttons in the lower corners, within arm's reach so a fingertip can press them
+  function makeBtn(text, color, x, yawTilt){
+    const c = document.createElement('canvas'); c.width = 256; c.height = 128;
+    const g = c.getContext('2d'); g.fillStyle = color; g.beginPath(); g.roundRect(4, 4, 248, 120, 28); g.fill();
+    g.fillStyle = '#fff'; g.font = 'bold 52px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 128, 66);
+    const tx = new THREE.CanvasTexture(c); tx.colorSpace = THREE.SRGBColorSpace;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.045), new THREE.MeshBasicMaterial({ map: tx, transparent: true }));
+    m.position.set(x, -0.17, -0.45); m.rotation.set(-0.35, yawTilt, 0); camera.add(m);
+    return m;
+  }
+  const quitBtn = makeBtn('QUIT', '#d93a3a', 0.21, -0.3);
+  const frontBtn = makeBtn('FRONT', '#1f9d55', -0.21, 0.3);
+  const fingerBtns = [{ mesh: quitBtn, act: () => quitApp(), at: null }, { mesh: frontBtn, act: () => markFront('look'), at: null }];
 
-  // fingertip press: hold an index fingertip on the button for 0.3 s
+  // fingertip press: hold an index fingertip on a button for 0.3 s
   const hands = [renderer.xr.getHand(0), renderer.xr.getHand(1)]; hands.forEach(h => scene.add(h));
-  const tipP = new THREE.Vector3(); let touchAt = null;
+  const tipP = new THREE.Vector3();
   function checkFingerQuit(){
-    let touching = false;
-    for (const h of hands) {
-      const tip = h.joints?.['index-finger-tip'];
-      if (!tip || !tip.visible) continue;
-      tip.getWorldPosition(tipP); quitBtn.worldToLocal(tipP);
-      if (Math.abs(tipP.x) < 0.055 && Math.abs(tipP.y) < 0.035 && Math.abs(tipP.z) < 0.035) touching = true;
+    for (const b of fingerBtns) {
+      let touching = false;
+      for (const h of hands) {
+        const tip = h.joints?.['index-finger-tip'];
+        if (!tip || !tip.visible) continue;
+        tip.getWorldPosition(tipP); b.mesh.worldToLocal(tipP);
+        if (Math.abs(tipP.x) < 0.055 && Math.abs(tipP.y) < 0.035 && Math.abs(tipP.z) < 0.035) touching = true;
+      }
+      b.mesh.material.color.set(touching ? 0xd0ffd0 : 0xffffff);
+      b.mesh.scale.setScalar(touching ? 0.92 : 1);
+      if (!touching) { b.at = null; continue; }
+      b.at ??= now();
+      if (now() - b.at > 300) { b.at = Infinity; b.act(); }
     }
-    quitBtn.material.color.set(touching ? 0xffd0d0 : 0xffffff);
-    quitBtn.scale.setScalar(touching ? 0.92 : 1);
-    if (!touching) { touchAt = null; return; }
-    touchAt ??= now();
-    if (now() - touchAt > 300) { touchAt = Infinity; quitApp(); }
   }
 
   const ray = new THREE.Raycaster(), rayM = new THREE.Matrix4();
@@ -449,6 +458,7 @@ function startHeadset(){
       ray.ray.origin.setFromMatrixPosition(c.matrixWorld);
       ray.ray.direction.set(0, 0, -1).applyMatrix4(rayM);
       if (ray.intersectObject(quitBtn).length) { quitApp(); return; }
+      if (ray.intersectObject(frontBtn).length) { markFront('look'); return; }
       const hitT = ray.intersectObjects(hitTargets, false)[0];
       if (hitT) { const tr = S.trk.list.find(x => x.id === hitT.object.userData.trackId); if (tr) { toggleSelect(tr); return; } }
       const src = c.userData.src;
@@ -568,8 +578,57 @@ function startHeadset(){
     }
   }
 
+  // ---------- car front: marked direction, a pin in the scene, and a heading readout ----------
+  S.frontLocal = null;                          // front direction relative to the pivot (radians, + = left)
+  const front = new THREE.Group(); front.visible = false; pivot.add(front);
+  { const pin = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.2, 20), new THREE.MeshBasicMaterial({ color: 0x2ee07a, depthTest: false, transparent: true, opacity: 0.9 }));
+    pin.rotation.x = Math.PI; pin.position.y = 0.25; front.add(pin);
+    const ringF = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.012, 8, 40), new THREE.MeshBasicMaterial({ color: 0x2ee07a, depthTest: false, transparent: true }));
+    front.add(ringF);
+    const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+    const g = c.getContext('2d'); g.fillStyle = 'rgba(0,0,0,.5)'; g.fillRect(0, 0, 256, 64); g.fillStyle = '#2ee07a'; g.font = 'bold 44px sans-serif'; g.textAlign = 'center'; g.fillText('FRONT', 128, 48);
+    const tx = new THREE.CanvasTexture(c); tx.colorSpace = THREE.SRGBColorSpace;
+    const lab = new THREE.Sprite(new THREE.SpriteMaterial({ map: tx, depthTest: false, transparent: true })); lab.scale.set(0.5, 0.125, 1); lab.position.y = -0.22; front.add(lab);
+    front.renderOrder = 11; }
+  // bottom-center readout
+  const rc = document.createElement('canvas'); rc.width = 512; rc.height = 96;
+  const rTex = new THREE.CanvasTexture(rc); rTex.colorSpace = THREE.SRGBColorSpace;
+  const readout = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.03), new THREE.MeshBasicMaterial({ map: rTex, transparent: true, depthTest: false }));
+  readout.position.set(0, -0.1, -0.5); readout.rotation.x = -0.2; readout.renderOrder = 12; camera.add(readout);
+  let readText = '';
+  function frontWorldYaw(){ return S.frontLocal == null ? null : wrapA(pivot.rotation.y + S.frontLocal); }
+  function placeFront(){ const a = S.frontLocal ?? 0; front.position.set(-Math.sin(a) * 3, 0, -Math.cos(a) * 3); }
+  function markFront(how){
+    let yaw = THREE.MathUtils.degToRad(S.headYaw);
+    if (how === 'ray') {                         // point with the right controller if it is there
+      const rc = [0, 1].map(i => renderer.xr.getController(i)).find(c => c.userData.src?.handedness === 'right' && c.userData.src.gamepad);
+      if (rc) { const d = new THREE.Vector3(0, 0, -1).applyQuaternion(rc.getWorldQuaternion(new THREE.Quaternion())); yaw = Math.atan2(-d.x, -d.z); }
+    }
+    S.frontLocal = wrapA(yaw - pivot.rotation.y); placeFront(); front.visible = true;
+    log('Car front marked'); S.conn?.open && S.conn.send({ t: 'front' });
+  }
+  function updateReadout(){
+    const fy = frontWorldYaw();
+    let text, col = '#e9eef2';
+    if (fy == null) text = 'X or FRONT = mark car front';
+    else {
+      const d = THREE.MathUtils.radToDeg(wrapA(THREE.MathUtils.degToRad(S.headYaw) - fy));   // + = you are turned left of front
+      S.frontOff = d;
+      if (Math.abs(d) < 5) { text = 'Facing front'; col = '#2ee07a'; }
+      else text = `Front: ${Math.abs(d).toFixed(0)}° ${d > 0 ? '→' : '←'}`;
+    }
+    if (text === readText) return;
+    readText = text;
+    const g = rc.getContext('2d'); g.clearRect(0, 0, 512, 96);
+    g.fillStyle = 'rgba(0,0,0,.55)'; g.beginPath(); g.roundRect(0, 0, 512, 96, 24); g.fill();
+    g.fillStyle = col; g.font = 'bold 54px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 256, 52);
+    rTex.needsUpdate = true;
+  }
+
   function recenter(){
+    const keepFront = frontWorldYaw();           // recentering must not move the front marker
     pivot.position.copy(headPos); baseYaw = THREE.MathUtils.degToRad(S.headYaw); S.carYaw0 = S.carYaw;
+    if (keepFront != null) { S.frontLocal = wrapA(keepFront - baseYaw); placeFront(); }
     log('Recentered');
   }
   const DET_ORDER = ['off', 'quest', 'phone'];
@@ -593,6 +652,7 @@ function startHeadset(){
         if (Math.abs(lx) > 0.6 && !pb.stick) { S.hfov = Math.max(40, Math.min(120, S.hfov + Math.sign(lx))); store.set('hfov', S.hfov); pb.stick = true; }
         if (Math.abs(lx) < 0.3) pb.stick = false;
       }
+      if (h === 'left' && edge(4)) markFront('ray');   // X = mark car front
       if (h === 'left') {                      // hold Y for 1 s to quit
         if (pressed(5)) { pb.yAt ??= now(); if (now() - pb.yAt > 1000) { pb.yAt = Infinity; quitApp(); } }
         else pb.yAt = null;
@@ -610,10 +670,11 @@ function startHeadset(){
     if (needRecenter && frame) { recenter(); needRecenter = false; }
     const corr = S.corrOn ? S.gain * THREE.MathUtils.degToRad(S.carYaw - S.carYaw0) : 0;
     pivot.rotation.y = baseYaw + corr;
+    updateReadout();
     if (frame) { pollPads(renderer.xr.getSession()); checkFingerQuit(); }
     if (t - lastHud > 90) { drawHud(); lastHud = t; }
     if (t - lastSend > 100 && S.conn?.open) {
-      S.conn.send({ t: 'h', yaw: +S.headYaw.toFixed(2), corr: S.corrOn ? 1 : 0, gain: S.gain, det: S.detSrc, fps: +S.det.fps.toFixed(1), ms: Math.round(S.inferMs), n: S.boxes.length, tk: S.trk.list.filter(x => x.ok).length });
+      S.conn.send({ t: 'h', yaw: +S.headYaw.toFixed(2), corr: S.corrOn ? 1 : 0, gain: S.gain, det: S.detSrc, fps: +S.det.fps.toFixed(1), ms: Math.round(S.inferMs), n: S.boxes.length, tk: S.trk.list.filter(x => x.ok).length, fo: S.frontLocal == null ? null : +(S.frontOff ?? 0).toFixed(1) });
       lastSend = t;
     }
     if (renderer.xr.isPresenting) renderer.render(scene, camera);
@@ -686,7 +747,9 @@ function startPhone(){
       const g = P.gps || {};
       P.rows.push([Date.now(), P.yaw.toFixed(2), P.rate.toFixed(2), P.compass ?? '', g.lat ?? '', g.lon ?? '', g.spd ?? '', g.hdg ?? '', g.acc ?? '',
         m.yaw, m.corr, m.gain, m.det, m.fps, m.ms, m.n, m.tk ?? '',
-        (P.tiltRate ?? 0).toFixed(2), (P.tilt ?? 0).toFixed(2), ...(P.w || [0, 0, 0]).map(v => v.toFixed(2)), ...(P.gFast || [0, 0, 0]).map(v => v.toFixed(3))].join(','));
+        (P.tiltRate ?? 0).toFixed(2), (P.tilt ?? 0).toFixed(2), ...(P.w || [0, 0, 0]).map(v => v.toFixed(2)), ...(P.gFast || [0, 0, 0]).map(v => v.toFixed(3)),
+        P.axes.locked ? 1 : 0, P.fwd ? (P.pitchRate ?? 0).toFixed(2) : '', P.fwd ? (P.rollRate ?? 0).toFixed(2) : '',
+        P.fwd ? (P.appPitch ?? 0).toFixed(2) : '', P.fwd ? (P.appRoll ?? 0).toFixed(2) : '', m.fo ?? ''].join(','));
       if (P.rows.length % 10 === 0) $('pLogInfo').textContent = P.rows.length + ' rows logged';
     }
   }
@@ -748,6 +811,30 @@ function startPhone(){
     navigator.wakeLock?.request('screen').then(w => { P.wake = w; }).catch(() => {});
   }
   let gpsWatch = null;
+  // Car forward axis in phone coordinates: while driving fairly straight, the phone's acceleration
+  // (with gravity removed) points along the car's forward axis, with the sign of the speed change.
+  { const f = store.get('fwd'); if (f) try { P.fwd = JSON.parse(f); P.axes = { n: 99, c: 1, locked: true }; } catch {} }
+  P.axes = P.axes || { n: 0, c: 0, locked: false };
+  P.F = [0, 0, 0]; P.Fabs = 0;
+  function learnAxes(spd, ts){
+    const prev = P.prevFix; P.prevFix = { spd, ts };
+    const n = P.linN || 0, sum = P.linSum || [0, 0, 0], maxRate = P.maxRate || 0;
+    P.linSum = [0, 0, 0]; P.linN = 0; P.maxRate = 0;
+    if (P.axes.locked || !prev || spd == null || prev.spd == null || n < 10) return;
+    const dt = (ts - prev.ts) / 1000; if (dt < 0.5 || dt > 3) return;
+    const dv = (spd - prev.spd) / dt;
+    if (Math.min(spd, prev.spd) < 3 || Math.abs(dv) < 0.4 || maxRate > 4) return;   // need a clear speed-up or slow-down, not a turn
+    const gn = Math.hypot(...P.g) || 1, u = P.g.map(v => v / gn), m = sum.map(v => v / n);
+    const mu = m[0] * u[0] + m[1] * u[1] + m[2] * u[2], mp = m.map((v, i) => v - mu * u[i]);   // horizontal part only
+    P.F = P.F.map((v, i) => v + mp[i] * dv); P.Fabs += Math.hypot(...mp) * Math.abs(dv);
+    const fn = Math.hypot(...P.F);
+    P.axes.n++; P.axes.c = P.Fabs ? fn / P.Fabs : 0;
+    if (P.axes.n >= 6 && P.axes.c > 0.7) {
+      P.fwd = P.F.map(v => v / fn); P.axes.locked = true; store.set('fwd', JSON.stringify(P.fwd));
+      plog(`Car axes locked (${P.axes.n} samples, consistency ${P.axes.c.toFixed(2)})`);
+    }
+  }
+  $('pAxesReset').onclick = () => { P.fwd = null; P.axes = { n: 0, c: 0, locked: false }; P.F = [0, 0, 0]; P.Fabs = 0; store.del('fwd'); plog('Car axes reset — drive and speed up / brake a few times'); };
   function startGps(){
     if (!navigator.geolocation) { $('sGps').textContent = 'not available'; return; }
     if (gpsWatch != null) navigator.geolocation.clearWatch(gpsWatch);
@@ -755,6 +842,7 @@ function startPhone(){
     gpsWatch = navigator.geolocation.watchPosition(p => {
       const c = p.coords, spd = c.speed != null && c.speed >= 0 ? c.speed : null, hdg = c.heading != null && c.heading >= 0 ? c.heading : null;
       P.gps = { t: 'gps', lat: +c.latitude.toFixed(6), lon: +c.longitude.toFixed(6), spd, hdg, acc: Math.round(c.accuracy) };
+      learnAxes(spd, p.timestamp);
       P.conn?.send(P.gps);
       $('sGps').textContent = `${P.gps.lat}, ${P.gps.lon} ±${P.gps.acc}`; $('sGps').className = 'ok'; $('gpsHelp').classList.add('hide');
       $('sSpd').textContent = spd != null ? (spd * 2.237).toFixed(0) : '0 / –';
@@ -794,18 +882,34 @@ function startPhone(){
     const nr = Math.hypot(...P.gRef) || 1, cosT = (P.g[0] * P.gRef[0] + P.g[1] * P.gRef[1] + P.g[2] * P.gRef[2]) / (n * nr);
     P.tilt = Math.acos(Math.max(-1, Math.min(1, cosT))) * 180 / Math.PI;
     P.w = w; P.gFast = [a.x ?? 0, a.y ?? 0, a.z ?? 0];
+    // accumulate linear acceleration between GPS fixes (used to learn which way the car's front is)
+    const la = e.acceleration;
+    const lin = la && la.x != null ? [la.x, la.y, la.z] : [P.gFast[0] - P.g[0], P.gFast[1] - P.g[1], P.gFast[2] - P.g[2]];
+    P.linSum = (P.linSum || [0, 0, 0]).map((v, i) => v + lin[i]); P.linN = (P.linN || 0) + 1;
+    P.maxRate = Math.max(P.maxRate || 0, Math.abs(rate));
+    // once the forward axis is known: split rotation into pitch and roll
+    if (P.fwd) {
+      const f = P.fwd, u = gh, l = [u[1] * f[2] - u[2] * f[1], u[2] * f[0] - u[0] * f[2], u[0] * f[1] - u[1] * f[0]];
+      P.pitchRate = w[0] * l[0] + w[1] * l[1] + w[2] * l[2];
+      P.rollRate = w[0] * f[0] + w[1] * f[1] + w[2] * f[2];
+      const nf = Math.hypot(...P.gFast) || 1, d = P.gFast.map((v, i) => v / nf - P.gRef[i] / nr);   // apparent tilt vs ~10 s average
+      P.appPitch = Math.asin(Math.max(-1, Math.min(1, d[0] * f[0] + d[1] * f[1] + d[2] * f[2]))) * 180 / Math.PI;
+      P.appRoll = Math.asin(Math.max(-1, Math.min(1, d[0] * l[0] + d[1] * l[1] + d[2] * l[2]))) * 180 / Math.PI;
+    }
   }
   setInterval(() => {
     $('sYaw').textContent = P.yaw.toFixed(1);
     $('sRate').textContent = P.rate.toFixed(1);
-    $('sTilt').textContent = `${(P.tiltRate ?? 0).toFixed(1)} / ${(P.tilt ?? 0).toFixed(1)}`;
+    $('sTilt').textContent = P.fwd ? `P ${(P.pitchRate ?? 0).toFixed(1)} R ${(P.rollRate ?? 0).toFixed(1)}` : `${(P.tiltRate ?? 0).toFixed(1)} / ${(P.tilt ?? 0).toFixed(1)}`;
+    $('sTiltL').textContent = P.fwd ? 'Pitch / roll rate (°/s)' : 'Pitch+roll rate (°/s) / tilt (°)';
+    $('sAxes').textContent = P.axes.locked ? 'locked' : `learning ${P.axes.n}/6`; $('sAxes').className = P.axes.locked ? 'ok' : '';
     const gh = P.gps?.hdg; $('sHdg').textContent = `${P.compass ?? '–'} / ${gh != null && !isNaN(gh) ? Math.round(gh) : '–'}`;
     P.conn?.send({ t: 'imu', yaw: +P.yaw.toFixed(3), rate: +P.rate.toFixed(2) });
   }, 33);
 
   // log export
   $('pDl').onclick = () => {
-    const head = 'time_ms,car_yaw,car_rate,compass,lat,lon,gps_speed_mps,gps_heading,gps_acc_m,head_yaw,corr_on,gain,det_src,det_fps,infer_ms,boxes,tracks,tilt_rate,tilt_deg,rot_x,rot_y,rot_z,acc_x,acc_y,acc_z';
+    const head = 'time_ms,car_yaw,car_rate,compass,lat,lon,gps_speed_mps,gps_heading,gps_acc_m,head_yaw,corr_on,gain,det_src,det_fps,infer_ms,boxes,tracks,tilt_rate,tilt_deg,rot_x,rot_y,rot_z,acc_x,acc_y,acc_z,axes_locked,pitch_rate,roll_rate,app_pitch_deg,app_roll_deg,front_offset_deg';
     const blob = new Blob([head + '\n' + P.rows.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
     a.download = `car-mr-log-${new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')}.csv`; a.click();
